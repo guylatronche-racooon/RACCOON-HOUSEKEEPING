@@ -54,6 +54,7 @@ import {
 } from "../lib/cloud";
 
 type PageId = "dashboard" | "distribution" | "personnel" | "reports" | "settings";
+type DashboardView = "rooms" | "commons";
 type RoomStatus = "OP" | "OS" | "LP" | "LS";
 type Progress = "À faire" | "En cours" | "Terminée" | "Contrôlée" | "Validée sans contrôle";
 type DeliveryMethod = "phone" | "pdf";
@@ -62,6 +63,7 @@ type DistributionStep = "team" | "assign";
 type DepartureState = "Présent" | "Parti";
 type PersonnelView = "active" | "archived";
 type TechnicalStatus = "Détecté" | "Signalé" | "En cours" | "Réparé";
+type CommonAreaAction = "Ménage" | "Problème technique";
 type AccountRole =
   | "Administrateur"
   | "Adjoint(e) de direction"
@@ -101,8 +103,28 @@ type Room = {
   arrivalToday: boolean;
   alert?: "DND" | "Refus de service" | "Problème technique";
   technicalStatus?: TechnicalStatus;
+  technicalPhotoName?: string;
+  technicalPhotoData?: string;
   receptionComment?: string;
   floorComment?: string;
+};
+
+type CommonArea = {
+  id: string;
+  name: string;
+  completed: boolean;
+  action?: CommonAreaAction;
+  comment?: string;
+  assignee?: string;
+  minutes?: number;
+  technicalPhotoName?: string;
+  technicalPhotoData?: string;
+};
+
+type CommonAreaErrors = {
+  comment?: boolean;
+  assignee?: boolean;
+  minutes?: boolean;
 };
 
 type DistributionAlert = {
@@ -140,6 +162,7 @@ type AppSnapshot = {
   schemaVersion: 1;
   workDate: string;
   rooms: Room[];
+  commonAreas: CommonArea[];
   employees: Employee[];
   accounts: UserAccount[];
   blankMinutes: number;
@@ -193,6 +216,141 @@ function timeLabel(value: Date = new Date()) {
 
 function dayStorageKey(workDate: string) {
   return `${LOCAL_STORAGE_PREFIX}:day:${workDate}`;
+}
+
+const employeeDirectoryStorageKey = `${LOCAL_STORAGE_PREFIX}:permanent:employees`;
+const outOfServiceStorageKey = `${LOCAL_STORAGE_PREFIX}:permanent:out-of-service`;
+const permanentSettingsStorageKey = `${LOCAL_STORAGE_PREFIX}:permanent:hotel-settings`;
+
+type PermanentHotelSettings = Pick<AppSnapshot,
+  | "accounts"
+  | "blankMinutes"
+  | "stayoverMinutes"
+  | "defaultPauseMinutes"
+  | "alertSettings"
+  | "hotelName"
+  | "groupName"
+  | "hotelAddress"
+  | "hotelLogo"
+  | "groupLogo"
+  | "predefinedInstructions"
+>;
+
+type PermanentCloudSnapshot = PermanentHotelSettings & {
+  schemaVersion: 2;
+  employees: Employee[];
+  rooms: Room[];
+  outOfServiceRooms: string[];
+  savedAt: string;
+};
+
+function employeeDirectoryRecord(employee: Employee): Employee {
+  return { ...employee, annexTasks: [], presentToday: false };
+}
+
+function permanentRoomRecord(room: Room): Room {
+  return {
+    ...room,
+    layout: room.defaultLayout,
+    status: room.outOfService ? room.status : "LP",
+    intervention: null,
+    departureState: undefined,
+    housekeeper: "",
+    progress: "À faire",
+    arrivalToday: false,
+    alert: undefined,
+    technicalStatus: undefined,
+    technicalPhotoName: undefined,
+    technicalPhotoData: undefined,
+    receptionComment: undefined,
+    floorComment: undefined,
+  };
+}
+
+function mergeRoomsWithPermanent(dayRooms: Room[], permanentRooms: Room[], outOfServiceRooms: Set<string>) {
+  const source = permanentRooms.length ? permanentRooms : dayRooms;
+  return source.map((profile) => {
+    const day = dayRooms.find((room) => room.number === profile.number);
+    return {
+      ...profile,
+      ...(day ?? {}),
+      id: profile.id,
+      number: profile.number,
+      category: profile.category,
+      defaultLayout: profile.defaultLayout,
+      layout: day?.layout ?? profile.defaultLayout,
+      outOfService: outOfServiceRooms.has(profile.number),
+      status: outOfServiceRooms.has(profile.number) ? (day?.status ?? profile.status) : (day?.status ?? "LP"),
+    };
+  });
+}
+
+function readEmployeeDirectory() {
+  try {
+    const raw = window.localStorage.getItem(employeeDirectoryStorageKey);
+    const parsed = raw ? JSON.parse(raw) as Employee[] : null;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeEmployeeDirectory(employees: Employee[]) {
+  try {
+    window.localStorage.setItem(employeeDirectoryStorageKey, JSON.stringify(employees.map(employeeDirectoryRecord)));
+  } catch {
+    // La sauvegarde quotidienne reste disponible si le navigateur refuse le stockage permanent.
+  }
+}
+
+function mergeEmployeesWithDirectory(dayEmployees: Employee[], directory: Employee[]) {
+  return directory.map((profile) => {
+    const day = dayEmployees.find((employee) => employee.id === profile.id);
+    return {
+      ...profile,
+      start: day?.start ?? profile.start,
+      end: day?.end ?? profile.end,
+      presenceMinutes: day?.presenceMinutes ?? profile.presenceMinutes,
+      pause: day?.pause ?? profile.pause,
+      annexTasks: day?.annexTasks ?? [],
+      presentToday: day?.presentToday ?? false,
+    };
+  });
+}
+
+function readPersistentOutOfServiceRooms() {
+  try {
+    const raw = window.localStorage.getItem(outOfServiceStorageKey);
+    const parsed = raw ? JSON.parse(raw) as string[] : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function writePersistentOutOfServiceRooms(rooms: Set<string>) {
+  try {
+    window.localStorage.setItem(outOfServiceStorageKey, JSON.stringify([...rooms]));
+  } catch {
+    // La journée courante reste enregistrée même si ce stockage est indisponible.
+  }
+}
+
+function readPermanentHotelSettings() {
+  try {
+    const raw = window.localStorage.getItem(permanentSettingsStorageKey);
+    return raw ? JSON.parse(raw) as PermanentHotelSettings : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePermanentHotelSettings(settings: PermanentHotelSettings) {
+  try {
+    window.localStorage.setItem(permanentSettingsStorageKey, JSON.stringify(settings));
+  } catch {
+    // La copie Supabase reste la source permanente lorsque le stockage local est indisponible.
+  }
 }
 
 const roomDefinitions: Array<[string, string, string]> = [
@@ -262,6 +420,43 @@ const accountRoles: AccountRole[] = [
 
 const initialPredefinedInstructions = ["Lit bébé", "Lits séparés", "Arrivée prioritaire", "Canapé-lit", "Anniversaire"];
 
+const initialCommonAreas: CommonArea[] = [
+  "Couloir Deluxe — 1er étage",
+  "Couloir Triple — 1er étage",
+  "Couloir Rue — 1er étage",
+  "Couloir Deluxe — 2e étage",
+  "Couloir Triple — 2e étage",
+  "Couloir Rue — 2e étage",
+  "Couloir Deluxe — 3e étage",
+  "Couloir Triple — 3e étage",
+  "Couloir Rue — 3e étage",
+  "Escalier principal",
+  "Escalier de secours",
+  "Ascenseurs",
+  "Hall",
+  "Espaces personnel",
+  "Toilettes clients",
+  "Cour d’accueil",
+  "Jardin",
+  "Bar extérieur",
+  "Restaurant — Salle 1",
+  "Restaurant — Salle 2",
+  "Restaurant — Salle 3",
+  "Restaurant — Salle 4",
+  "Cuisine",
+  "Locaux techniques et chaufferie",
+  "Lingerie",
+  "Local poubelles",
+  "Terrasses",
+  "Façades",
+  "Toiture",
+  "TGBT 1",
+  "TGBT 2",
+  "Réseau informatique",
+  "Vidéosurveillance",
+  "Téléphonie",
+].map((name, index) => ({ id: `common-${index + 1}`, name, completed: false }));
+
 const technicalSteps: Array<{ value: TechnicalStatus; label: string }> = [
   { value: "Détecté", label: "Détecté" },
   { value: "Signalé", label: "Signalé au technicien" },
@@ -327,6 +522,11 @@ function housekeeperInstruction(room: Room) {
   return [layoutChangeInstruction(room), room.receptionComment?.trim()].filter(Boolean).join(" · ");
 }
 
+function roomEventLabel(room: Room) {
+  if (room.technicalStatus === "Réparé" && room.alert !== "Problème technique") return "Problème technique · Réparé";
+  return room.alert ?? "Événement";
+}
+
 function availableLayouts(room: Room) {
   return room.defaultLayout.startsWith("TPL") ? ["TPL DBL", "TPL TWIN"] : ["DBL", "TWIN"];
 }
@@ -366,9 +566,11 @@ function imageFormat(dataUrl: string) {
 export default function Home() {
   const cloudClient = useMemo(() => getCloudClient(), []);
   const [page, setPage] = useState<PageId>("dashboard");
+  const [dashboardView, setDashboardView] = useState<DashboardView>("rooms");
   const [workDate, setWorkDate] = useState(todayIsoDate);
   const [clock, setClock] = useState(() => new Date());
   const [rooms, setRooms] = useState<Room[]>(initialRooms);
+  const [commonAreas, setCommonAreas] = useState<CommonArea[]>(initialCommonAreas);
   const [employees, setEmployees] = useState<Employee[]>(initialEmployees);
   const [accounts, setAccounts] = useState<UserAccount[]>(initialAccounts);
   const [currentAccountId, setCurrentAccountId] = useState(2);
@@ -384,6 +586,8 @@ export default function Home() {
   const [groupLogo, setGroupLogo] = useState("/sowell-hotels.png");
   const [distributionStep, setDistributionStep] = useState<DistributionStep>("team");
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
+  const [commonAreaDraft, setCommonAreaDraft] = useState<CommonArea | null>(null);
+  const [commonAreaErrors, setCommonAreaErrors] = useState<CommonAreaErrors>({});
   const [selectedRooms, setSelectedRooms] = useState<Set<string>>(new Set());
   const [dashboardSelectedRooms, setDashboardSelectedRooms] = useState<Set<string>>(new Set());
   const [assignTarget, setAssignTarget] = useState("Kseniia");
@@ -420,13 +624,16 @@ export default function Home() {
   const [authReady, setAuthReady] = useState(!cloudClient);
   const [authUserEmail, setAuthUserEmail] = useState<string | null>(null);
   const [cloudContextError, setCloudContextError] = useState<string | null>(null);
+  const [cloudSettingsReady, setCloudSettingsReady] = useState(!cloudClient);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const skipNextCloudSave = useRef(false);
+  const skipNextCloudSettingsSave = useRef(false);
   const latestRemoteUpdatedAt = useRef("");
+  const latestSettingsRemoteUpdatedAt = useRef("");
   const deviceId = useRef("");
 
   const currentRoom = rooms.find((room) => room.number === selectedRoom) ?? null;
@@ -439,6 +646,7 @@ export default function Home() {
     schemaVersion: SNAPSHOT_VERSION,
     workDate,
     rooms,
+    commonAreas,
     employees,
     accounts,
     blankMinutes,
@@ -457,6 +665,7 @@ export default function Home() {
     accounts,
     alertSettings,
     blankMinutes,
+    commonAreas,
     defaultPauseMinutes,
     employees,
     groupLogo,
@@ -474,6 +683,7 @@ export default function Home() {
   const applySnapshot = (snapshot: Partial<AppSnapshot>) => {
     if (snapshot.schemaVersion !== SNAPSHOT_VERSION) return;
     if (Array.isArray(snapshot.rooms)) setRooms(snapshot.rooms);
+    if (Array.isArray(snapshot.commonAreas)) setCommonAreas(snapshot.commonAreas);
     if (Array.isArray(snapshot.employees)) setEmployees(snapshot.employees);
     if (Array.isArray(snapshot.accounts) && !cloudContext) setAccounts(snapshot.accounts);
     if (typeof snapshot.blankMinutes === "number") setBlankMinutes(snapshot.blankMinutes);
@@ -489,7 +699,7 @@ export default function Home() {
     if (typeof snapshot.reportComment === "string") setReportComment(snapshot.reportComment);
   };
 
-  const freshSnapshotForDate = (date: string): AppSnapshot => ({
+  const freshSnapshotForDate = (date: string, directory = readEmployeeDirectory() ?? employees): AppSnapshot => ({
     ...appSnapshot,
     workDate: date,
     rooms: rooms.map((room) => ({
@@ -501,12 +711,22 @@ export default function Home() {
       arrivalToday: false,
       alert: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.alert : undefined,
       technicalStatus: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalStatus : undefined,
+      technicalPhotoName: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalPhotoName : undefined,
+      technicalPhotoData: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalPhotoData : undefined,
       receptionComment: undefined,
       floorComment: undefined,
       status: room.outOfService ? room.status : "LP",
     })),
-    employees: employees.map((employee) => ({
-      ...employee,
+    commonAreas: commonAreas.map((area) => ({
+      ...area,
+      completed: false,
+      action: undefined,
+      comment: "",
+      assignee: "",
+      minutes: 0,
+    })),
+    employees: directory.map((employee) => ({
+      ...employeeDirectoryRecord(employee),
       presentToday: false,
       annexTasks: [],
     })),
@@ -568,7 +788,7 @@ export default function Home() {
       load: netDay ? (totalCharge / netDay) * 100 : 0,
     };
   }), [blankMinutes, employees, rooms, stayoverMinutes]);
-  const dayEvents = useMemo(() => rooms.filter((room) => Boolean(room.alert)), [rooms]);
+  const dayEvents = useMemo(() => rooms.filter((room) => Boolean(room.alert) || room.technicalStatus === "Réparé"), [rooms]);
 
   const assignmentStats = useMemo(() => presentEmployees.map((employee) => {
     const assignedRooms = rooms.filter((room) => room.housekeeper === employee.name && (room.intervention === "À blanc" || room.intervention === "Recouche"));
@@ -692,6 +912,7 @@ export default function Home() {
       setAuthUserEmail(session?.user.email ?? null);
       if (!session) {
         setCloudContext(null);
+        setCloudSettingsReady(false);
         setHydrated(false);
       }
       setAuthReady(true);
@@ -749,8 +970,10 @@ export default function Home() {
       await Promise.resolve();
       if (!active) return;
       setHydrated(false);
+      setCloudSettingsReady(!cloudClient);
       setSyncStatus(cloudClient ? "loading" : navigator.onLine ? "local" : "offline");
       let localSnapshot: AppSnapshot | null = null;
+      const localDirectory = readEmployeeDirectory() ?? employees.map(employeeDirectoryRecord);
       try {
         const raw = window.localStorage.getItem(dayStorageKey(workDate));
         localSnapshot = raw ? JSON.parse(raw) as AppSnapshot : null;
@@ -760,7 +983,9 @@ export default function Home() {
 
       let selectedSnapshot = localSnapshot?.schemaVersion === SNAPSHOT_VERSION
         ? localSnapshot
-        : freshSnapshotForDate(workDate);
+        : freshSnapshotForDate(workDate, localDirectory);
+
+      let cloudPermanent: Partial<PermanentCloudSnapshot> | null = null;
 
       if (cloudClient && cloudContext) {
         const { data, error } = await cloudClient
@@ -778,17 +1003,60 @@ export default function Home() {
           skipNextCloudSave.current = true;
           setSyncStatus("synced");
         }
+
+        const { data: settingsData, error: settingsError } = await cloudClient
+          .from("raccoon_settings")
+          .select("payload,updated_at")
+          .eq("hotel_id", cloudContext.hotelId)
+          .maybeSingle();
+        if (settingsError) {
+          if (!active) return;
+          setSyncStatus(navigator.onLine ? "error" : "offline");
+        } else if (settingsData?.payload) {
+          cloudPermanent = settingsData.payload as Partial<PermanentCloudSnapshot>;
+          latestSettingsRemoteUpdatedAt.current = String(settingsData.updated_at ?? "");
+          skipNextCloudSettingsSave.current = true;
+        }
       }
+
+      const directory = Array.isArray(cloudPermanent?.employees)
+        ? cloudPermanent.employees.map(employeeDirectoryRecord)
+        : localDirectory;
+      const permanentSettings = cloudPermanent
+        ? Object.fromEntries(Object.entries(cloudPermanent).filter(([key]) => ![
+            "schemaVersion",
+            "employees",
+            "rooms",
+            "outOfServiceRooms",
+            "savedAt",
+          ].includes(key))) as PermanentHotelSettings
+        : readPermanentHotelSettings();
+      const persistentOutOfService = Array.isArray(cloudPermanent?.outOfServiceRooms)
+        ? new Set(cloudPermanent.outOfServiceRooms)
+        : readPersistentOutOfServiceRooms();
+      const permanentRooms = Array.isArray(cloudPermanent?.rooms) ? cloudPermanent.rooms : [];
+
+      writeEmployeeDirectory(directory);
+      writePersistentOutOfServiceRooms(persistentOutOfService);
+      if (permanentSettings) writePermanentHotelSettings(permanentSettings);
+      selectedSnapshot = {
+        ...selectedSnapshot,
+        ...(permanentSettings ?? {}),
+        employees: mergeEmployeesWithDirectory(selectedSnapshot.employees ?? [], directory),
+        rooms: mergeRoomsWithPermanent(selectedSnapshot.rooms ?? [], permanentRooms, persistentOutOfService),
+      };
 
       if (!active) return;
       applySnapshot(selectedSnapshot);
       setLastSavedAt(selectedSnapshot.savedAt ? new Date(selectedSnapshot.savedAt) : null);
+      setCloudSettingsReady(true);
       setHydrated(true);
     };
 
     loadDay().catch(() => {
       if (!active) return;
       setHydrated(true);
+      setCloudSettingsReady(!cloudClient);
       setSyncStatus(navigator.onLine ? "error" : "offline");
     });
     return () => {
@@ -798,6 +1066,70 @@ export default function Home() {
     // courante comme modèle lorsqu’une nouvelle journée est ouverte.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloudClient, cloudContext, workDate]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const permanentSettings: PermanentHotelSettings = {
+      accounts,
+      blankMinutes,
+      stayoverMinutes,
+      defaultPauseMinutes,
+      alertSettings,
+      hotelName,
+      groupName,
+      hotelAddress,
+      hotelLogo,
+      groupLogo,
+      predefinedInstructions,
+    };
+    writePermanentHotelSettings(permanentSettings);
+  }, [accounts, alertSettings, blankMinutes, defaultPauseMinutes, groupLogo, groupName, hotelAddress, hotelLogo, hotelName, hydrated, predefinedInstructions, stayoverMinutes]);
+
+  useEffect(() => {
+    if (!hydrated || !cloudClient || !cloudContext || !cloudSettingsReady) return;
+    if (skipNextCloudSettingsSave.current) {
+      skipNextCloudSettingsSave.current = false;
+      return;
+    }
+
+    const directory = readEmployeeDirectory() ?? employees.map(employeeDirectoryRecord);
+    const outOfServiceRooms = rooms.filter((room) => room.outOfService).map((room) => room.number);
+    const payload: PermanentCloudSnapshot = {
+      schemaVersion: 2,
+      employees: directory.map(employeeDirectoryRecord),
+      rooms: rooms.map(permanentRoomRecord),
+      outOfServiceRooms,
+      accounts,
+      blankMinutes,
+      stayoverMinutes,
+      defaultPauseMinutes,
+      alertSettings,
+      hotelName,
+      groupName,
+      hotelAddress,
+      hotelLogo,
+      groupLogo,
+      predefinedInstructions,
+      savedAt: new Date().toISOString(),
+    };
+
+    const timer = window.setTimeout(async () => {
+      const updatedAt = new Date().toISOString();
+      const { error } = await cloudClient.from("raccoon_settings").upsert({
+        hotel_id: cloudContext.hotelId,
+        payload: { ...payload, savedAt: updatedAt },
+        updated_at: updatedAt,
+        updated_by: cloudContext.userId,
+      }, { onConflict: "hotel_id" });
+      if (error) {
+        setSyncStatus(navigator.onLine ? "error" : "offline");
+        return;
+      }
+      latestSettingsRemoteUpdatedAt.current = updatedAt;
+      setSyncStatus("synced");
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [accounts, alertSettings, appSnapshot, blankMinutes, cloudClient, cloudContext, cloudSettingsReady, defaultPauseMinutes, employees, groupLogo, groupName, hotelAddress, hotelLogo, hotelName, hydrated, predefinedInstructions, rooms, stayoverMinutes]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -964,13 +1296,119 @@ export default function Home() {
     updateRoom(room.number, {
       alert: removing ? undefined : alert,
       technicalStatus: !removing && alert === "Problème technique" ? "Détecté" : undefined,
+      technicalPhotoName: !removing && alert === "Problème technique" ? room.technicalPhotoName : undefined,
+      technicalPhotoData: !removing && alert === "Problème technique" ? room.technicalPhotoData : undefined,
     });
     showToast(removing ? "Signalement retiré" : `${alert} ajouté`);
   };
 
   const updateTechnicalStatus = (room: Room, technicalStatus: TechnicalStatus) => {
-    updateRoom(room.number, { technicalStatus });
+    updateRoom(room.number, {
+      technicalStatus,
+      alert: technicalStatus === "Réparé" ? undefined : "Problème technique",
+    });
     showToast(`Chambre ${room.number} · problème technique ${technicalStatus.toLowerCase()}`);
+  };
+
+  const uploadTechnicalPhoto = (room: Room, event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      showToast("Choisis une photo");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      showToast("La photo doit peser moins de 5 Mo");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      updateRoom(room.number, { technicalPhotoName: file.name, technicalPhotoData: String(reader.result) });
+      showToast(`Photo ajoutée au signalement de la chambre ${room.number}`);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const openCommonArea = (area: CommonArea) => {
+    setCommonAreaDraft({
+      ...area,
+      comment: area.comment ?? "",
+      assignee: area.assignee ?? "",
+      minutes: area.minutes ?? 0,
+    });
+    setCommonAreaErrors({});
+  };
+
+  const closeCommonArea = () => {
+    setCommonAreaDraft(null);
+    setCommonAreaErrors({});
+  };
+
+  const selectCommonAreaAction = (action: CommonAreaAction) => {
+    setCommonAreaDraft((current) => {
+      if (!current) return current;
+      const nextAction = current.action === action ? undefined : action;
+      return {
+        ...current,
+        action: nextAction,
+        assignee: nextAction === "Ménage" ? current.assignee : "",
+        minutes: nextAction === "Ménage" ? current.minutes : 0,
+        technicalPhotoName: nextAction === "Problème technique" ? current.technicalPhotoName : undefined,
+        technicalPhotoData: nextAction === "Problème technique" ? current.technicalPhotoData : undefined,
+      };
+    });
+    setCommonAreaErrors({});
+  };
+
+  const uploadCommonAreaTechnicalPhoto = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      showToast("Choisis une photo");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      showToast("La photo doit peser moins de 5 Mo");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCommonAreaDraft((current) => current ? {
+        ...current,
+        technicalPhotoName: file.name,
+        technicalPhotoData: String(reader.result),
+      } : current);
+      showToast("Photo ajoutée au signalement");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const saveCommonArea = () => {
+    if (!commonAreaDraft) return;
+    const errors: CommonAreaErrors = {
+      comment: Boolean(commonAreaDraft.action && !commonAreaDraft.comment?.trim()),
+      assignee: commonAreaDraft.action === "Ménage" && !commonAreaDraft.assignee,
+      minutes: commonAreaDraft.action === "Ménage" && !(commonAreaDraft.minutes && commonAreaDraft.minutes > 0),
+    };
+    if (Object.values(errors).some(Boolean)) {
+      setCommonAreaErrors(errors);
+      showToast("Complète les champs obligatoires avant d’enregistrer");
+      return;
+    }
+
+    const savedArea: CommonArea = {
+      ...commonAreaDraft,
+      comment: commonAreaDraft.action ? commonAreaDraft.comment?.trim() : "",
+      assignee: commonAreaDraft.action === "Ménage" ? commonAreaDraft.assignee : "",
+      minutes: commonAreaDraft.action === "Ménage" ? commonAreaDraft.minutes : 0,
+      technicalPhotoName: commonAreaDraft.action === "Problème technique" ? commonAreaDraft.technicalPhotoName : undefined,
+      technicalPhotoData: commonAreaDraft.action === "Problème technique" ? commonAreaDraft.technicalPhotoData : undefined,
+    };
+    setCommonAreas((current) => current.map((area) => area.id === savedArea.id ? savedArea : area));
+    closeCommonArea();
+    showToast(`${savedArea.name} enregistré`);
   };
 
   const toggleDashboardSelection = (number: string) => {
@@ -1008,6 +1446,9 @@ export default function Home() {
       return;
     }
     const count = dashboardSelectedRooms.size;
+    const persistentRooms = readPersistentOutOfServiceRooms();
+    dashboardSelectedRooms.forEach((number) => outOfService ? persistentRooms.add(number) : persistentRooms.delete(number));
+    writePersistentOutOfServiceRooms(persistentRooms);
     setRooms((current) => current.map((room) => dashboardSelectedRooms.has(room.number) ? { ...room, outOfService } : room));
     setDashboardSelectedRooms(new Set());
     showToast(`${count} chambre${count > 1 ? "s" : ""} ${outOfService ? "mise" : "remise"}${count > 1 ? "s" : ""} ${outOfService ? "hors service" : "en service"}`);
@@ -1084,7 +1525,12 @@ export default function Home() {
   };
 
   const toggleOutOfService = (room: Room) => {
-    updateRoom(room.number, { outOfService: !room.outOfService });
+    const nextOutOfService = !room.outOfService;
+    const persistentRooms = readPersistentOutOfServiceRooms();
+    if (nextOutOfService) persistentRooms.add(room.number);
+    else persistentRooms.delete(room.number);
+    writePersistentOutOfServiceRooms(persistentRooms);
+    updateRoom(room.number, { outOfService: nextOutOfService });
     showToast(`Chambre ${room.number} · ${room.outOfService ? "remise en service" : "hors service"}`);
   };
 
@@ -1334,7 +1780,10 @@ export default function Home() {
       lastName: editingEmployee.lastName.trim(),
       presenceMinutes: minutesBetween(editingEmployee.start, editingEmployee.end),
     };
-    setEmployees((current) => current.map((employee) => employee.id === nextEmployee.id ? nextEmployee : employee));
+    const nextEmployees = employees.map((employee) => employee.id === nextEmployee.id ? nextEmployee : employee);
+    setEmployees(nextEmployees);
+    const directory = readEmployeeDirectory() ?? employees.map(employeeDirectoryRecord);
+    writeEmployeeDirectory(directory.map((employee) => employee.id === nextEmployee.id ? employeeDirectoryRecord(nextEmployee) : employee));
     if (previous.name !== nextName) {
       setRooms((current) => current.map((room) => room.housekeeper === previous.name ? { ...room, housekeeper: nextName } : room));
       if (assignTarget === previous.name) setAssignTarget(nextName);
@@ -1346,6 +1795,8 @@ export default function Home() {
 
   const changeEmployeeArchiveState = (employee: Employee, active: boolean) => {
     updateEmployee(employee.id, { active, presentToday: active ? false : employee.presentToday });
+    const directory = readEmployeeDirectory() ?? employees.map(employeeDirectoryRecord);
+    writeEmployeeDirectory(directory.map((profile) => profile.id === employee.id ? { ...profile, active } : profile));
     if (!active) {
       setRooms((current) => current.map((room) => room.housekeeper === employee.name ? { ...room, housekeeper: "" } : room));
       setSelectedRooms(new Set());
@@ -1447,7 +1898,7 @@ export default function Home() {
         room.arrivalToday ? "OUI" : "—",
         room.housekeeper || "À attribuer",
         room.progress === "Contrôlée" ? "Contrôlée" : room.progress === "Validée sans contrôle" ? "Validée" : room.progress,
-        room.alert === "Problème technique" ? (room.technicalStatus ?? "Détecté") : "—",
+        room.technicalStatus ?? "—",
         [housekeeperInstruction(room), room.floorComment, room.alert && room.alert !== "Problème technique" ? room.alert : ""].filter(Boolean).join(" · ") || "—",
       ]),
       styles: { fontSize: 6.4, cellPadding: 1.8, overflow: "linebreak", valign: "middle" },
@@ -1619,7 +2070,7 @@ export default function Home() {
     doc.setFontSize(9);
     if (dayEvents.length) {
       dayEvents.slice(0, 6).forEach((room, index) => {
-        doc.text(`Chambre ${room.number} · ${room.alert} · ${room.floorComment ?? room.receptionComment ?? "Sans commentaire"}`, 14, endY + 22 + index * 7);
+        doc.text(`Chambre ${room.number} · ${roomEventLabel(room)} · ${room.floorComment ?? room.receptionComment ?? "Sans commentaire"}${room.technicalPhotoName ? " · Photo jointe" : ""}`, 14, endY + 22 + index * 7);
       });
     } else {
       doc.text("Aucun événement déclaré.", 14, endY + 22);
@@ -1645,23 +2096,23 @@ export default function Home() {
 
   const addEmployee = () => {
     if (!newEmployee.name.trim()) return;
-    setEmployees((current) => [
-      ...current,
-      {
-        id: Math.max(...current.map((employee) => employee.id), 0) + 1,
-        name: newEmployee.name.trim(),
-        lastName: newEmployee.lastName.trim(),
-        contract: newEmployee.contract,
-        start: newEmployee.start,
-        end: newEmployee.end,
-        presenceMinutes: minutesBetween(newEmployee.start, newEmployee.end),
-        pause: newEmployee.pause,
-        annexTasks: [],
-        active: true,
-        presentToday: true,
-        delivery: newEmployee.delivery,
-      },
-    ]);
+    const employee: Employee = {
+      id: Math.max(...employees.map((person) => person.id), 0) + 1,
+      name: newEmployee.name.trim(),
+      lastName: newEmployee.lastName.trim(),
+      contract: newEmployee.contract,
+      start: newEmployee.start,
+      end: newEmployee.end,
+      presenceMinutes: minutesBetween(newEmployee.start, newEmployee.end),
+      pause: newEmployee.pause,
+      annexTasks: [],
+      active: true,
+      presentToday: true,
+      delivery: newEmployee.delivery,
+    };
+    setEmployees((current) => [...current, employee]);
+    const directory = readEmployeeDirectory() ?? employees.map(employeeDirectoryRecord);
+    writeEmployeeDirectory([...directory, employeeDirectoryRecord(employee)]);
     setNewEmployee({ name: "", lastName: "", contract: "30 h", start: "09:30", end: "16:00", pause: defaultPauseMinutes, delivery: "pdf" });
     setShowAddEmployee(false);
     showToast("Femme de chambre ajoutée");
@@ -1685,15 +2136,15 @@ export default function Home() {
       <main className="pilot-gate">
         <form className="pilot-gate-card auth-card" onSubmit={submitCloudAuth}>
           <img src="/raccoon-housekeeping-icon.png" alt="Raccoon Housekeeping" />
-          <p className="eyebrow">Version pilote · V0.1</p>
+          <p className="eyebrow">Version pilote · V0.2</p>
           <h1>Raccoon Housekeeping</h1>
           <p>Connecte-toi pour retrouver la journée de l’hôtel sur tous les appareils autorisés.</p>
           <label><span>Adresse e-mail</span><input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="prenom@hotel.fr" /></label>
           <label><span>Mot de passe</span><input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} minLength={6} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="6 caractères minimum" /></label>
           {authError && <div className={`auth-message ${authError.startsWith("Compte créé") ? "success" : "error"}`}><CircleAlert size={16} />{authError}</div>}
-          <button className="button primary auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Connexion…" : authMode === "login" ? "Se connecter" : "Créer le premier compte"}</button>
+          <button className="button primary auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Connexion…" : authMode === "login" ? "Se connecter" : "Créer mon compte"}</button>
           <button className="auth-switch" type="button" onClick={() => { setAuthMode((mode) => mode === "login" ? "signup" : "login"); setAuthError(null); }}>
-            {authMode === "login" ? "Première installation ? Créer le compte administrateur" : "J’ai déjà un compte"}
+            {authMode === "login" ? "Créer mon compte" : "J’ai déjà un compte"}
           </button>
           <small>Le premier compte créé sur une base vide devient administrateur. Les suivants doivent être autorisés dans Paramètres.</small>
         </form>
@@ -1749,8 +2200,56 @@ export default function Home() {
   const renderDashboard = () => {
     const classified = rooms.length - prepStats.unclassified;
     const floors = Array.from(new Set(rooms.map((room) => room.number.charAt(0)).filter(Boolean))).sort();
+    const completedCommonAreas = commonAreas.filter((area) => area.completed).length;
+    const dashboardTabs = (
+      <nav className="dashboard-tabs" aria-label="Tableaux du jour">
+        <button className={dashboardView === "rooms" ? "active" : ""} onClick={() => setDashboardView("rooms")}>
+          <BedDouble size={17} /> Tableau des chambres <span>{rooms.length}</span>
+        </button>
+        <button className={dashboardView === "commons" ? "active" : ""} onClick={() => setDashboardView("commons")}>
+          <Building2 size={17} /> Tableau des communs <span>{commonAreas.length}</span>
+        </button>
+      </nav>
+    );
+
+    if (dashboardView === "commons") {
+      return (
+        <>
+          {dashboardTabs}
+          <section className="common-heading">
+            <div>
+              <p className="eyebrow">Parties communes · {shortDateLabel(workDate)}</p>
+              <h2>Tableau des espaces communs</h2>
+              <p>Retrouve ici les couloirs, circulations et espaces de l’hôtel, sans modifier le tableau des chambres.</p>
+            </div>
+            <div className="common-progress"><strong>{completedCommonAreas} / {commonAreas.length}</strong><span>contrôlés aujourd’hui</span></div>
+          </section>
+          <section className="common-area-grid" aria-label="Tableau des parties communes">
+            {commonAreas.map((area) => (
+              <button
+                type="button"
+                key={area.id}
+                className={`common-area-card ${area.completed ? "completed" : ""} ${area.action ? "has-action" : ""}`}
+                onClick={() => openCommonArea(area)}
+                aria-label={`Ouvrir la fiche de ${area.name}`}
+              >
+                <span>{area.name}</span>
+                <span className="common-card-statuses">
+                  {area.action === "Ménage" && <small className="cleaning"><Sparkles size={14} /> Ménage · {area.assignee} · {area.minutes} min</small>}
+                  {area.action === "Problème technique" && <small className="technical"><Wrench size={14} /> Problème technique{area.technicalPhotoName ? " · Photo jointe" : ""}</small>}
+                  {area.completed && <small className="controlled"><CheckCircle2 size={14} /> Contrôlé</small>}
+                  {!area.action && !area.completed && <small>À renseigner</small>}
+                </span>
+              </button>
+            ))}
+          </section>
+        </>
+      );
+    }
+
     return (
       <>
+        {dashboardTabs}
         <section className="prep-intro">
           <div>
             <p className="eyebrow">Préparation du {shortDateLabel(workDate)}</p>
@@ -1850,7 +2349,7 @@ export default function Home() {
                         {(room.progress === "Contrôlée" || room.progress === "Validée sans contrôle") && <span className={`controlled-chip ${room.progress === "Validée sans contrôle" ? "exception" : ""}`} title={room.progress}><CheckCircle2 size={13} />{room.progress === "Contrôlée" ? "Contrôlée" : "Validée"}</span>}
                         {room.alert === "Problème technique" && <span className="technical-indicator" title={`Problème technique · ${room.technicalStatus ?? "Détecté"}`}><Wrench size={15} /></span>}
                       </div>
-                      <button className={`room-note-button ${housekeeperInstruction(room) || room.floorComment || room.alert ? "has-note" : ""}`} onClick={() => setSelectedRoom(room.number)} aria-label={`Consignes et commentaires de la chambre ${room.number}`}><MessageSquareText size={15} /></button>
+                      <button className={`room-note-button ${housekeeperInstruction(room) || room.floorComment || room.alert || room.technicalStatus === "Réparé" ? "has-note" : ""}`} onClick={() => setSelectedRoom(room.number)} aria-label={`Consignes et commentaires de la chambre ${room.number}`}><MessageSquareText size={15} /></button>
                       {(room.intervention === "À blanc" || room.intervention === "Recouche") && (
                         <div className="room-operation-row">
                           {room.intervention === "À blanc" && (
@@ -2134,18 +2633,11 @@ export default function Home() {
         <button className={personnelView === "active" ? "active" : ""} onClick={() => setPersonnelView("active")}><UsersRound size={17} /> Personnel actif <span>{activeEmployees.length}</span></button>
         <button className={personnelView === "archived" ? "active" : ""} onClick={() => setPersonnelView("archived")}><Archive size={17} /> Personnel archivé <span>{archivedEmployees.length}</span></button>
       </nav>
-      {personnelView === "active" && (
-        <section className="personnel-summary">
-          <article><UsersRound /><div><strong>{presentEmployees.length}</strong><span>présentes aujourd’hui</span></div></article>
-          <article><Clock3 /><div><strong>{minutesToHours(presentEmployees.reduce((total, employee) => total + employee.presenceMinutes, 0))}</strong><span>présence planifiée</span></div></article>
-          <article><Sparkles /><div><strong>{minutesToHours(presentEmployees.reduce((total, employee) => total + employeeAnnexMinutes(employee), 0))}</strong><span>tâches annexes estimées</span></div></article>
-        </section>
-      )}
       <section className="table-card personnel-card">
-        <div className="card-title-row"><div><h3>{personnelView === "active" ? "Référentiel du personnel" : "Archives du personnel"}</h3><p>{personnelView === "active" ? "Horaires modifiables et archivage en quelques secondes." : "Réactive une personne pour la rendre de nouveau disponible."}</p></div><label className="search-field"><Search size={18} /><input placeholder="Rechercher" value={personnelSearch} onChange={(event) => setPersonnelSearch(event.target.value)} /></label></div>
+        <div className="card-title-row"><div><h3>{personnelView === "active" ? "Référentiel permanent du personnel" : "Archives du personnel"}</h3><p>{personnelView === "active" ? "Identité, contrat, horaires habituels, pause et support de distribution." : "Réactive une personne pour la rendre de nouveau disponible."}</p></div><label className="search-field"><Search size={18} /><input placeholder="Rechercher" value={personnelSearch} onChange={(event) => setPersonnelSearch(event.target.value)} /></label></div>
         <div className="table-scroll">
           <table className="room-table personnel-table">
-            <thead><tr><th>Prénom et nom</th><th>Contrat</th><th>Horaires du jour</th><th>Pause</th><th>Tâches annexes</th><th>Distribution</th><th>Statut</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Prénom et nom</th><th>Contrat</th><th>Horaires habituels</th><th>Pause habituelle</th><th>Distribution</th><th>Statut</th><th>Actions</th></tr></thead>
             <tbody>
               {visibleEmployees.map((employee) => (
                 <tr key={employee.id}>
@@ -2153,13 +2645,12 @@ export default function Home() {
                   <td>{employee.contract}</td>
                   <td><div className="personnel-hours"><input type="time" value={employee.start} disabled={!employee.active} onChange={(event) => updateEmployeeSchedule(employee, "start", event.target.value)} /><span>–</span><input type="time" value={employee.end} disabled={!employee.active} onChange={(event) => updateEmployeeSchedule(employee, "end", event.target.value)} /></div><small>{minutesToHours(employee.presenceMinutes)} retenues</small></td>
                   <td><select value={employee.pause} disabled={!employee.active} onChange={(event) => updateEmployee(employee.id, { pause: Number(event.target.value) })}>{[20, 30, 45, 60].map((value) => <option key={value} value={value}>{value} min</option>)}</select></td>
-                  <td><span className="personnel-annex-summary">{employeeAnnexSummary(employee)}</span><small>{employeeAnnexMinutes(employee) ? `${employeeAnnexMinutes(employee)} min au total` : "Aucune durée"}</small></td>
                   <td><span className="delivery-label">{employee.delivery === "phone" ? <Smartphone size={16} /> : <Printer size={16} />}{employee.delivery === "phone" ? "Téléphone" : "PDF"}</span></td>
                   <td><span className={`active-badge ${employee.active ? "on" : "off"}`}>{employee.active ? "Active" : "Archivée"}</span></td>
                   <td><div className="personnel-actions"><button className="icon-button ghost" aria-label={`Modifier ${employeeFullName(employee)}`} title="Modifier" onClick={() => setEditingEmployee({ ...employee })}><Pencil size={17} /></button><button className="icon-button ghost" aria-label={employee.active ? `Archiver ${employeeFullName(employee)}` : `Réactiver ${employeeFullName(employee)}`} title={employee.active ? "Supprimer et archiver" : "Réactiver"} onClick={() => changeEmployeeArchiveState(employee, !employee.active)}>{employee.active ? <Archive size={18} /> : <Check size={18} />}</button></div></td>
                 </tr>
               ))}
-              {!visibleEmployees.length && <tr><td colSpan={8}><div className="empty-personnel"><Archive size={22} /><span>{personnelView === "archived" ? "Aucune personne archivée" : "Aucun résultat"}</span></div></td></tr>}
+              {!visibleEmployees.length && <tr><td colSpan={7}><div className="empty-personnel"><Archive size={22} /><span>{personnelView === "archived" ? "Aucune personne archivée" : "Aucun résultat"}</span></div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -2197,7 +2688,7 @@ export default function Home() {
           </div>
           <aside className="events-card">
             <div className="events-title"><div><h3>Événements</h3><p>Repris dans le rapport PDF</p></div><span>{dayEvents.length}</span></div>
-            {dayEvents.length ? <ol className="event-list">{dayEvents.map((room) => <li key={room.number}><span className={`event-icon ${room.alert === "Problème technique" ? "blue" : room.alert === "Refus de service" ? "amber" : "red"}`}>{room.alert === "Problème technique" ? <Wrench size={16} /> : <BellRing size={16} />}</span><div><strong>Chambre {room.number} · {room.alert}</strong><p>{room.floorComment ?? room.receptionComment ?? "Sans commentaire"}</p><small>Déclaré par la gouvernante</small></div></li>)}</ol> : <div className="empty-events"><CheckCircle2 size={24} /><p>Aucun événement déclaré pour le moment.</p></div>}
+            {dayEvents.length ? <ol className="event-list">{dayEvents.map((room) => <li key={room.number}><span className={`event-icon ${room.technicalStatus ? "blue" : room.alert === "Refus de service" ? "amber" : "red"}`}>{room.technicalStatus ? <Wrench size={16} /> : <BellRing size={16} />}</span><div><strong>Chambre {room.number} · {roomEventLabel(room)}</strong><p>{room.floorComment ?? room.receptionComment ?? "Sans commentaire"}</p>{room.technicalPhotoData && <img className="event-photo" src={room.technicalPhotoData} alt={`Photo du problème en chambre ${room.number}`} />}<small>{room.technicalStatus === "Réparé" ? "Conservé dans le rapport après réparation" : "Déclaré par la gouvernante"}</small></div></li>)}</ol> : <div className="empty-events"><CheckCircle2 size={24} /><p>Aucun événement déclaré pour le moment.</p></div>}
             <label className={`report-comment-field ${reportCommentError ? "error" : ""}`}>
               <span>Commentaire de la gouvernante <b>obligatoire</b></span>
               <textarea value={reportComment} onChange={(event) => { setReportComment(event.target.value); if (event.target.value.trim()) setReportCommentError(false); }} placeholder="Événements de la journée ou RAS" />
@@ -2392,18 +2883,91 @@ export default function Home() {
               <div className="drawer-section-title"><h3>Signalement</h3><span>Événement de la journée</span></div>
               <div className="incident-options">{(["DND", "Refus de service", "Problème technique"] as const).map((alert) => <button key={alert} className={currentRoom.alert === alert ? "selected" : ""} onClick={() => toggleRoomAlert(currentRoom, alert)}>{alert === "Problème technique" ? <Wrench size={16} /> : <TriangleAlert size={16} />}{alert}</button>)}</div>
               {currentRoom.alert === "Problème technique" && (
-                <div className="technical-flow" role="group" aria-label="Suivi du problème technique">
-                  {technicalSteps.map((step, index) => {
-                    const currentIndex = Math.max(0, technicalSteps.findIndex((candidate) => candidate.value === (currentRoom.technicalStatus ?? "Détecté")));
-                    const complete = index <= currentIndex;
-                    const current = step.value === (currentRoom.technicalStatus ?? "Détecté");
-                    return <button key={step.value} className={`${complete ? "complete" : ""} ${current ? "current" : ""}`} aria-pressed={current} onClick={() => updateTechnicalStatus(currentRoom, step.value)}>{complete ? <Check size={14} /> : <span className="technical-step-dot" />}{step.label}</button>;
-                  })}
-                </div>
+                <>
+                  <div className="technical-flow" role="group" aria-label="Suivi du problème technique">
+                    {technicalSteps.map((step, index) => {
+                      const currentIndex = Math.max(0, technicalSteps.findIndex((candidate) => candidate.value === (currentRoom.technicalStatus ?? "Détecté")));
+                      const complete = index <= currentIndex;
+                      const current = step.value === (currentRoom.technicalStatus ?? "Détecté");
+                      return <button key={step.value} className={`${complete ? "complete" : ""} ${current ? "current" : ""}`} aria-pressed={current} onClick={() => updateTechnicalStatus(currentRoom, step.value)}>{complete ? <Check size={14} /> : <span className="technical-step-dot" />}{step.label}</button>;
+                    })}
+                  </div>
+                  <label className="technical-photo-upload">
+                    <input type="file" accept="image/*" capture="environment" onChange={(event) => uploadTechnicalPhoto(currentRoom, event)} />
+                    {currentRoom.technicalPhotoData
+                      ? <><img src={currentRoom.technicalPhotoData} alt="Photo du problème technique" /><span><ImagePlus size={16} /> Remplacer la photo</span></>
+                      : <span><ImagePlus size={18} /> Ajouter une photo <small>Facultatif · 5 Mo maximum</small></span>}
+                  </label>
+                </>
               )}
             </section>
             <section className="drawer-section comments-section"><label><span>Commentaire gouvernante (interne)</span><textarea value={currentRoom.floorComment ?? ""} onChange={(event) => updateRoom(currentRoom.number, { floorComment: event.target.value })} placeholder="Observation ou suivi interne…" /></label></section>
             <footer className="drawer-footer"><button className="button secondary" onClick={() => setSelectedRoom(null)}>Fermer</button><button className="button primary" onClick={() => { setSelectedRoom(null); showToast(`Chambre ${currentRoom.number} enregistrée`); }}><Check size={18} /> Enregistrer</button></footer>
+          </aside>
+        </div>
+      )}
+
+      {commonAreaDraft && (
+        <div className="drawer-backdrop" onClick={closeCommonArea}>
+          <aside className="room-drawer common-area-drawer" onClick={(event) => event.stopPropagation()} aria-label={`Détail de ${commonAreaDraft.name}`}>
+            <div className="drawer-header">
+              <div><p>Partie commune</p><h2>{commonAreaDraft.name}</h2><span>{shortDateLabel(workDate)}</span></div>
+              <button className="icon-button ghost" onClick={closeCommonArea} aria-label="Fermer"><X size={21} /></button>
+            </div>
+
+            <section className="drawer-section">
+              <div className="drawer-section-title"><h3>Action</h3><span>Sélectionne ce qui est nécessaire</span></div>
+              <div className="common-action-options">
+                <button type="button" className={commonAreaDraft.action === "Ménage" ? "selected cleaning" : ""} aria-pressed={commonAreaDraft.action === "Ménage"} onClick={() => selectCommonAreaAction("Ménage")}><Sparkles size={17} /> Ménage</button>
+                <button type="button" className={commonAreaDraft.action === "Problème technique" ? "selected technical" : ""} aria-pressed={commonAreaDraft.action === "Problème technique"} onClick={() => selectCommonAreaAction("Problème technique")}><Wrench size={17} /> Problème technique</button>
+                <button type="button" className={commonAreaDraft.completed ? "selected controlled" : ""} aria-pressed={commonAreaDraft.completed} onClick={() => setCommonAreaDraft({ ...commonAreaDraft, completed: !commonAreaDraft.completed })}><CheckCircle2 size={17} /> Contrôlé</button>
+              </div>
+            </section>
+
+            {commonAreaDraft.action === "Ménage" && (
+              <section className="drawer-section common-area-form">
+                <div className="drawer-section-title"><h3>Demande de ménage</h3><span>Tous les champs sont obligatoires</span></div>
+                <div className="common-area-form-grid">
+                  <label className={commonAreaErrors.assignee ? "field-error" : ""}>
+                    <span>Attribuer à *</span>
+                    <select value={commonAreaDraft.assignee ?? ""} onChange={(event) => { setCommonAreaDraft({ ...commonAreaDraft, assignee: event.target.value }); setCommonAreaErrors({ ...commonAreaErrors, assignee: false }); }} aria-invalid={commonAreaErrors.assignee}>
+                      <option value="">Choisir une personne</option>
+                      {presentEmployees.map((employee) => <option key={employee.id} value={employee.name}>{employeeFullName(employee)}</option>)}
+                    </select>
+                    {commonAreaErrors.assignee && <small>Choisis la personne qui réalisera le ménage.</small>}
+                  </label>
+                  <label className={commonAreaErrors.minutes ? "field-error" : ""}>
+                    <span>Temps de réalisation *</span>
+                    <span className="duration-input"><input type="number" min="1" step="5" value={commonAreaDraft.minutes || ""} onChange={(event) => { setCommonAreaDraft({ ...commonAreaDraft, minutes: Number(event.target.value) }); setCommonAreaErrors({ ...commonAreaErrors, minutes: false }); }} aria-invalid={commonAreaErrors.minutes} /><em>min</em></span>
+                    {commonAreaErrors.minutes && <small>Indique un temps supérieur à 0 minute.</small>}
+                  </label>
+                </div>
+                <label className={commonAreaErrors.comment ? "field-error full-comment" : "full-comment"}>
+                  <span>Commentaire *</span>
+                  <textarea value={commonAreaDraft.comment ?? ""} onChange={(event) => { setCommonAreaDraft({ ...commonAreaDraft, comment: event.target.value }); setCommonAreaErrors({ ...commonAreaErrors, comment: false }); }} placeholder="Ex. nettoyer le sol et les vitres…" aria-invalid={commonAreaErrors.comment} />
+                  {commonAreaErrors.comment && <small>Le commentaire est obligatoire pour demander du ménage.</small>}
+                </label>
+              </section>
+            )}
+
+            {commonAreaDraft.action === "Problème technique" && (
+              <section className="drawer-section common-area-form">
+                <div className="drawer-section-title"><h3>Problème technique</h3><span>Commentaire obligatoire</span></div>
+                <label className={commonAreaErrors.comment ? "field-error full-comment" : "full-comment"}>
+                  <span>Commentaire *</span>
+                  <textarea value={commonAreaDraft.comment ?? ""} onChange={(event) => { setCommonAreaDraft({ ...commonAreaDraft, comment: event.target.value }); setCommonAreaErrors({ ...commonAreaErrors, comment: false }); }} placeholder="Décris précisément le problème constaté…" aria-invalid={commonAreaErrors.comment} />
+                  {commonAreaErrors.comment && <small>Le commentaire est obligatoire pour signaler le problème.</small>}
+                </label>
+                <label className="technical-photo-upload">
+                  <input type="file" accept="image/*" capture="environment" onChange={uploadCommonAreaTechnicalPhoto} />
+                  {commonAreaDraft.technicalPhotoData
+                    ? <><img src={commonAreaDraft.technicalPhotoData} alt={`Photo du problème technique dans ${commonAreaDraft.name}`} /><span><ImagePlus size={16} /> Remplacer la photo</span></>
+                    : <span><ImagePlus size={18} /> Ajouter une photo <small>Facultatif · 5 Mo maximum</small></span>}
+                </label>
+              </section>
+            )}
+
+            <footer className="drawer-footer"><button className="button secondary" onClick={closeCommonArea}>Annuler</button><button className="button primary" onClick={saveCommonArea}><Check size={18} /> Enregistrer</button></footer>
           </aside>
         </div>
       )}
@@ -2414,7 +2978,7 @@ export default function Home() {
             <div className="modal-header"><div><p className="eyebrow">Distribution du jour</p><h2>Publier les feuilles individuelles</h2><p>Choisis le support de chaque femme de chambre.</p></div><button className="icon-button ghost" onClick={() => setShowPublish(false)}><X size={20} /></button></div>
             <div className="delivery-list">{presentEmployees.map((employee) => <div className="delivery-row" key={employee.id}><span className="person-cell"><span className="avatar">{employee.name[0]}</span><span><strong>{employeeFullName(employee)}</strong><small>{rooms.filter((room) => room.housekeeper === employee.name).length} chambres</small></span></span><div className="delivery-toggle"><button className={employee.delivery === "phone" ? "active" : ""} onClick={() => setDelivery(employee.id, "phone")}><Smartphone size={16} /> Téléphone</button><button className={employee.delivery === "pdf" ? "active" : ""} onClick={() => setDelivery(employee.id, "pdf")}><Printer size={16} /> PDF</button></div>{employee.delivery === "pdf" ? <button className="icon-button ghost" onClick={() => generateIndividualPdf(employee)} aria-label={`Télécharger la feuille de ${employeeFullName(employee)}`}><Download size={18} /></button> : <span className="ready-dot"><CheckCircle2 size={18} /> Prête</span>}</div>)}</div>
             <div className="modal-note"><CircleAlert size={17} /><p>Les feuilles téléphone sont consultables sans action possible. Les PDF sont générés individuellement pour impression.</p></div>
-            <div className="modal-actions"><button className="button secondary" onClick={() => setShowPublish(false)}>Annuler</button><button className="button primary" onClick={() => { setShowPublish(false); showToast(`Distribution publiée pour ${presentEmployees.length} personne${presentEmployees.length > 1 ? "s" : ""}`); }}><Send size={18} /> Publier maintenant</button></div>
+            <div className="modal-actions"><button className="button secondary" onClick={() => setShowPublish(false)}>Annuler</button><button className="button primary" onClick={() => { const pdfEmployees = presentEmployees.filter((employee) => employee.delivery === "pdf"); pdfEmployees.forEach((employee) => generateIndividualPdf(employee)); setShowPublish(false); showToast(`Distribution publiée${pdfEmployees.length ? ` · ${pdfEmployees.length} PDF généré${pdfEmployees.length > 1 ? "s" : ""}` : ""}`); }}><Send size={18} /> Publier maintenant</button></div>
           </div>
         </div>
       )}

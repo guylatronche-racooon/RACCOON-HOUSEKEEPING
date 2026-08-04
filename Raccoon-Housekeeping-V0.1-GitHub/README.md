@@ -1,8 +1,28 @@
-# Raccoon Housekeeping — V0.1 terrain
+# Raccoon Housekeeping — V0.2 terrain
 
 Application de préparation, distribution et suivi des chambres pour les équipes d’étages.
 
-Cette V0.1 reprend le parcours validé pour l’Hôtel Les Chevaliers : tableau des 90 chambres, statuts groupés, équipe du jour, distribution pondérée, tâches annexes, alertes, feuilles individuelles, contrôles, incidents techniques et rapports PDF.
+Cette V0.2 reprend le parcours validé pour l’Hôtel Les Chevaliers et sépare désormais les réglages permanents des données propres à chaque journée.
+
+## Mise à jour depuis la V0.1
+
+1. En fin de journée, générer le PDF de secours et le rapport du jour.
+2. Dans Supabase **SQL Editor**, exécuter uniquement `supabase/migration-v0.2.sql`.
+3. Remplacer les fichiers du dépôt GitHub par ceux de ce dossier.
+4. Laisser Vercel redéployer automatiquement l’application.
+5. Ouvrir l’application et vérifier que le personnel et les chambres HS sont bien repris.
+
+Ne pas réexécuter `supabase/schema.sql` sur la base déjà utilisée. La migration V0.2 est non destructive : elle conserve `raccoon_days` et initialise les données permanentes depuis la journée la plus récente.
+
+## Nouveautés V0.2
+
+- les fiches salariés, contrats, archives, paramètres de l’hôtel et chambres HS persistent d’un jour à l’autre ;
+- les présences, horaires corrigés, tâches annexes, attributions et rapports restent quotidiens ;
+- l’onglet Personnel n’affiche plus les tâches annexes ni les réglages de la journée ;
+- Publier génère automatiquement toutes les feuilles réglées sur PDF ;
+- une intervention passée à Réparé n’apparaît plus comme problème actif mais reste dans le rapport ;
+- une photo facultative peut être jointe au signalement technique ;
+- le lien d’inscription est renommé « Créer mon compte ».
 
 ## Ce qui fonctionne dès l’installation
 
@@ -59,7 +79,7 @@ Sur tablette ou téléphone, ouvrir le menu du navigateur puis choisir **Ajouter
 
 Pendant les premiers jours, garder la feuille habituelle en parallèle et générer régulièrement le **PDF de secours du tableau de bord**. Noter les anomalies et améliorations, puis les regrouper avant chaque mise à jour.
 
-Version actuelle : **0.1.0**.
+Version actuelle : **0.2.0**.
 
 ## Développement local
 
@@ -79,5 +99,6 @@ Copier `.env.example` vers `.env.local` uniquement si le mode Supabase doit êtr
 - `public/` : logos, icônes PWA, manifeste et mode hors ligne ;
 - `lib/cloud.ts` : connexion Supabase ;
 - `supabase/schema.sql` : base, droits et fonctions d’administration ;
+- `supabase/migration-v0.2.sql` : mise à jour non destructive d’une base V0.1 existante ;
 - `.env.example` : noms des variables à configurer ;
 - `vercel.json` : déploiement Vercel.
