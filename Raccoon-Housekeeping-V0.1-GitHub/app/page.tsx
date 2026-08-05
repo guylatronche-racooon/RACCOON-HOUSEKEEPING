@@ -46,10 +46,19 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  createCloudTechnicalIncident,
+  getCloudTechnicalPhotoUrl,
   getCloudClient,
+  listCloudTechnicalActivity,
+  listCloudTechnicalIncidents,
   listCloudMembers,
   resolveCloudContext,
+  type CloudTechnicalActivity,
+  type CloudTechnicalIncident,
+  type CloudTechnicalWorkflow,
   type CloudContext,
+  updateCloudTechnicalIncident,
+  uploadCloudTechnicalPhoto,
   upsertCloudMember,
 } from "../lib/cloud";
 
@@ -103,6 +112,8 @@ type Room = {
   arrivalToday: boolean;
   alert?: "DND" | "Refus de service" | "Problème technique";
   technicalStatus?: TechnicalStatus;
+  technicalIncidentId?: number;
+  technicalPhotoKey?: string;
   technicalPhotoName?: string;
   technicalPhotoData?: string;
   receptionComment?: string;
@@ -117,6 +128,9 @@ type CommonArea = {
   comment?: string;
   assignee?: string;
   minutes?: number;
+  technicalStatus?: TechnicalStatus;
+  technicalIncidentId?: number;
+  technicalPhotoKey?: string;
   technicalPhotoName?: string;
   technicalPhotoData?: string;
 };
@@ -464,6 +478,33 @@ const technicalSteps: Array<{ value: TechnicalStatus; label: string }> = [
   { value: "Réparé", label: "Réparé" },
 ];
 
+const workflowForTechnicalStatus: Record<TechnicalStatus, CloudTechnicalWorkflow> = {
+  "Détecté": "detected",
+  "Signalé": "reported",
+  "En cours": "in_progress",
+  "Réparé": "repaired",
+};
+
+const technicalStatusForWorkflow: Record<CloudTechnicalWorkflow, TechnicalStatus> = {
+  detected: "Détecté",
+  reported: "Signalé",
+  in_progress: "En cours",
+  repaired: "Réparé",
+  cancelled: "Réparé",
+};
+
+const technicalWorkflowLabels: Record<CloudTechnicalWorkflow, string> = {
+  detected: "Détecté",
+  reported: "Signalé au technicien",
+  in_progress: "En cours",
+  repaired: "Réparé",
+  cancelled: "Signalement annulé",
+};
+
+function technicalIncidentIsOpen(incident: CloudTechnicalIncident) {
+  return !["repaired", "cancelled"].includes(incident.workflowStatus);
+}
+
 const statusLabels: Record<RoomStatus, string> = {
   OP: "Occupée propre",
   OS: "Occupée sale",
@@ -630,6 +671,13 @@ export default function Home() {
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [technicalIncidents, setTechnicalIncidents] = useState<CloudTechnicalIncident[]>([]);
+  const [technicalActivity, setTechnicalActivity] = useState<CloudTechnicalActivity[]>([]);
+  const [technicalPhotoUrls, setTechnicalPhotoUrls] = useState<Record<number, string>>({});
+  const [pendingRoomPhotos, setPendingRoomPhotos] = useState<Record<string, File>>({});
+  const [pendingCommonAreaPhoto, setPendingCommonAreaPhoto] = useState<File | null>(null);
+  const [technicalBusy, setTechnicalBusy] = useState(false);
+  const [technicalSyncError, setTechnicalSyncError] = useState<string | null>(null);
   const skipNextCloudSave = useRef(false);
   const skipNextCloudSettingsSave = useRef(false);
   const latestRemoteUpdatedAt = useRef("");
@@ -637,6 +685,29 @@ export default function Home() {
   const deviceId = useRef("");
 
   const currentRoom = rooms.find((room) => room.number === selectedRoom) ?? null;
+  const incidentForLocation = (locationType: "room" | "common_area", location: string) =>
+    technicalIncidents.find((incident) =>
+      incident.locationType === locationType
+      && incident.location === location
+      && (technicalIncidentIsOpen(incident) || incident.reportedForDate === workDate)
+    ) ?? null;
+  const currentRoomIncident = currentRoom ? incidentForLocation("room", currentRoom.number) : null;
+  const currentRoomPhoto = currentRoomIncident?.photoKey
+    ? technicalPhotoUrls[currentRoomIncident.id]
+    : currentRoom?.technicalPhotoData;
+  const currentCommonAreaIncident = commonAreaDraft
+    ? incidentForLocation("common_area", commonAreaDraft.name)
+    : null;
+  const currentCommonAreaPhoto = currentCommonAreaIncident?.photoKey
+    ? technicalPhotoUrls[currentCommonAreaIncident.id]
+    : commonAreaDraft?.technicalPhotoData;
+  const activityForIncident = (incidentId: number | undefined) => incidentId
+    ? technicalActivity.filter((entry) => entry.interventionId === incidentId)
+    : [];
+  const roomPhotoSource = (room: Room) => {
+    const incident = incidentForLocation("room", room.number);
+    return incident?.photoKey ? technicalPhotoUrls[incident.id] : room.technicalPhotoData;
+  };
   const currentAccount = cloudContext
     ? accounts.find((account) => account.email?.toLocaleLowerCase("fr") === cloudContext.email.toLocaleLowerCase("fr"))
       ?? { id: -1, name: cloudContext.displayName, email: cloudContext.email, role: cloudContext.role as AccountRole, active: true }
@@ -711,6 +782,8 @@ export default function Home() {
       arrivalToday: false,
       alert: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.alert : undefined,
       technicalStatus: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalStatus : undefined,
+      technicalIncidentId: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalIncidentId : undefined,
+      technicalPhotoKey: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalPhotoKey : undefined,
       technicalPhotoName: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalPhotoName : undefined,
       technicalPhotoData: room.alert === "Problème technique" && room.technicalStatus !== "Réparé" ? room.technicalPhotoData : undefined,
       receptionComment: undefined,
@@ -720,10 +793,15 @@ export default function Home() {
     commonAreas: commonAreas.map((area) => ({
       ...area,
       completed: false,
-      action: undefined,
-      comment: "",
+      action: area.action === "Problème technique" && area.technicalStatus !== "Réparé" ? area.action : undefined,
+      comment: area.action === "Problème technique" && area.technicalStatus !== "Réparé" ? area.comment : "",
       assignee: "",
       minutes: 0,
+      technicalStatus: area.action === "Problème technique" && area.technicalStatus !== "Réparé" ? area.technicalStatus : undefined,
+      technicalIncidentId: area.action === "Problème technique" && area.technicalStatus !== "Réparé" ? area.technicalIncidentId : undefined,
+      technicalPhotoKey: area.action === "Problème technique" && area.technicalStatus !== "Réparé" ? area.technicalPhotoKey : undefined,
+      technicalPhotoName: area.action === "Problème technique" && area.technicalStatus !== "Réparé" ? area.technicalPhotoName : undefined,
+      technicalPhotoData: area.action === "Problème technique" && area.technicalStatus !== "Réparé" ? area.technicalPhotoData : undefined,
     })),
     employees: directory.map((employee) => ({
       ...employeeDirectoryRecord(employee),
@@ -914,6 +992,9 @@ export default function Home() {
         setCloudContext(null);
         setCloudSettingsReady(false);
         setHydrated(false);
+        setTechnicalIncidents([]);
+        setTechnicalActivity([]);
+        setTechnicalPhotoUrls({});
       }
       setAuthReady(true);
     });
@@ -961,6 +1042,118 @@ export default function Home() {
       active = false;
     };
   }, [authUserEmail, cloudClient, hotelName]);
+
+  useEffect(() => {
+    if (!cloudClient || !cloudContext) return;
+    let active = true;
+    Promise.all([
+      listCloudTechnicalIncidents(cloudClient, cloudContext.hotelId),
+      listCloudTechnicalActivity(cloudClient, cloudContext.hotelId),
+    ]).then(([incidents, history]) => {
+      if (!active) return;
+      setTechnicalIncidents(incidents);
+      setTechnicalActivity(history);
+      setTechnicalSyncError(null);
+    }).catch((error: unknown) => {
+      if (!active) return;
+      setTechnicalSyncError(error instanceof Error ? error.message : "Impossible de charger les signalements techniques.");
+    });
+    return () => {
+      active = false;
+    };
+  }, [cloudClient, cloudContext]);
+
+  useEffect(() => {
+    if (!cloudClient || !cloudContext) return;
+    const refreshTechnicalData = async () => {
+      try {
+        const [incidents, history] = await Promise.all([
+          listCloudTechnicalIncidents(cloudClient, cloudContext.hotelId),
+          listCloudTechnicalActivity(cloudClient, cloudContext.hotelId),
+        ]);
+        setTechnicalIncidents(incidents);
+        setTechnicalActivity(history);
+        setTechnicalSyncError(null);
+      } catch (error: unknown) {
+        setTechnicalSyncError(error instanceof Error ? error.message : "Synchronisation technique indisponible.");
+      }
+    };
+    const channel = cloudClient
+      .channel(`raccotel-technique-${cloudContext.hotelId}`)
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "raccotel_technique_interventions",
+        filter: `hotel_id=eq.${cloudContext.hotelId}`,
+      }, () => void refreshTechnicalData())
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "raccotel_technique_activity",
+        filter: `hotel_id=eq.${cloudContext.hotelId}`,
+      }, () => void refreshTechnicalData())
+      .subscribe();
+    return () => {
+      cloudClient.removeChannel(channel);
+    };
+  }, [cloudClient, cloudContext]);
+
+  useEffect(() => {
+    if (!cloudClient) return;
+    let active = true;
+    const withPhotos = technicalIncidents.filter((incident) => incident.photoKey);
+    Promise.all(withPhotos.map(async (incident) => {
+      try {
+        return [incident.id, await getCloudTechnicalPhotoUrl(cloudClient, incident.photoKey!)] as const;
+      } catch {
+        return [incident.id, ""] as const;
+      }
+    })).then((entries) => {
+      if (!active) return;
+      setTechnicalPhotoUrls(Object.fromEntries(entries.filter(([, url]) => Boolean(url))));
+    });
+    return () => {
+      active = false;
+    };
+  }, [cloudClient, technicalIncidents]);
+
+  useEffect(() => {
+    if (!technicalIncidents.length) return;
+    const visibleIncidents = technicalIncidents.filter((incident) =>
+      technicalIncidentIsOpen(incident) || incident.reportedForDate === workDate
+    );
+    const timer = window.setTimeout(() => {
+      setRooms((current) => current.map((room) => {
+        const incident = visibleIncidents.find((entry) => entry.locationType === "room" && entry.location === room.number);
+        if (!incident) return room;
+        const closed = ["repaired", "cancelled"].includes(incident.workflowStatus);
+        return {
+          ...room,
+          alert: closed ? undefined : "Problème technique",
+          technicalStatus: technicalStatusForWorkflow[incident.workflowStatus],
+          technicalIncidentId: incident.id,
+          technicalPhotoKey: incident.photoKey || undefined,
+          technicalPhotoName: incident.photoName || undefined,
+          floorComment: room.floorComment?.trim() ? room.floorComment : incident.description || undefined,
+        };
+      }));
+      setCommonAreas((current) => current.map((area) => {
+        const incident = visibleIncidents.find((entry) => entry.locationType === "common_area" && entry.location === area.name);
+        if (!incident) return area;
+        const cancelled = incident.workflowStatus === "cancelled";
+        return {
+          ...area,
+          action: cancelled ? undefined : "Problème technique",
+          comment: area.comment?.trim() ? area.comment : incident.description,
+          technicalStatus: technicalStatusForWorkflow[incident.workflowStatus],
+          technicalIncidentId: incident.id,
+          technicalPhotoKey: incident.photoKey || undefined,
+          technicalPhotoName: incident.photoName || undefined,
+        };
+      }));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [technicalIncidents, workDate]);
 
   useEffect(() => {
     if (cloudClient && !cloudContext) return;
@@ -1291,23 +1484,106 @@ export default function Home() {
     });
   };
 
+  const rememberTechnicalIncident = (incident: CloudTechnicalIncident) => {
+    setTechnicalIncidents((current) => [incident, ...current.filter((entry) => entry.id !== incident.id)]);
+  };
+
+  const technicalErrorMessage = (error: unknown) =>
+    error instanceof Error ? error.message : "Impossible de synchroniser le signalement avec Technique.";
+
+  const ensureRoomTechnicalIncident = async (room: Room) => {
+    if (!cloudClient || !cloudContext) throw new Error("Connexion au socle Raccotel requise.");
+    const existing = incidentForLocation("room", room.number);
+    if (existing) return existing;
+    const description = room.floorComment?.trim() || room.receptionComment?.trim() || "";
+    const created = await createCloudTechnicalIncident(cloudClient, cloudContext, {
+      workDate,
+      location: room.number,
+      locationType: "room",
+      title: description || "Problème technique",
+      description,
+    });
+    rememberTechnicalIncident(created);
+    updateRoom(room.number, { technicalIncidentId: created.id });
+    return created;
+  };
+
   const toggleRoomAlert = (room: Room, alert: NonNullable<Room["alert"]>) => {
     const removing = room.alert === alert;
+    const currentIncident = incidentForLocation("room", room.number);
     updateRoom(room.number, {
       alert: removing ? undefined : alert,
       technicalStatus: !removing && alert === "Problème technique" ? "Détecté" : undefined,
+      technicalIncidentId: !removing && alert === "Problème technique" ? room.technicalIncidentId : undefined,
+      technicalPhotoKey: !removing && alert === "Problème technique" ? room.technicalPhotoKey : undefined,
       technicalPhotoName: !removing && alert === "Problème technique" ? room.technicalPhotoName : undefined,
       technicalPhotoData: !removing && alert === "Problème technique" ? room.technicalPhotoData : undefined,
     });
+
+    const mustCloseTechnicalIncident = currentIncident
+      && technicalIncidentIsOpen(currentIncident)
+      && (removing || alert !== "Problème technique");
+    if (mustCloseTechnicalIncident && cloudClient && cloudContext) {
+      setTechnicalBusy(true);
+      void updateCloudTechnicalIncident(cloudClient, cloudContext, currentIncident.id, {
+        workflowStatus: "cancelled",
+      }).then((updated) => {
+        rememberTechnicalIncident(updated);
+        setTechnicalSyncError(null);
+        showToast("Signalement technique annulé dans les deux applications");
+      }).catch((error: unknown) => {
+        setTechnicalSyncError(technicalErrorMessage(error));
+        showToast(technicalErrorMessage(error));
+      }).finally(() => setTechnicalBusy(false));
+      return;
+    }
+
+    if (!removing && alert === "Problème technique") {
+      setTechnicalBusy(true);
+      setTechnicalSyncError(null);
+      void (async () => {
+        if (!cloudClient || !cloudContext) throw new Error("Connexion au socle Raccotel requise.");
+        const incident = currentIncident
+          ? await updateCloudTechnicalIncident(cloudClient, cloudContext, currentIncident.id, { workflowStatus: "detected" })
+          : await ensureRoomTechnicalIncident(room);
+        rememberTechnicalIncident(incident);
+        updateRoom(room.number, { technicalIncidentId: incident.id });
+        showToast(`Chambre ${room.number} · signalement transmis à Technique`);
+      })().catch((error: unknown) => {
+        setTechnicalSyncError(technicalErrorMessage(error));
+        showToast(technicalErrorMessage(error));
+      }).finally(() => setTechnicalBusy(false));
+      return;
+    }
+
     showToast(removing ? "Signalement retiré" : `${alert} ajouté`);
   };
 
-  const updateTechnicalStatus = (room: Room, technicalStatus: TechnicalStatus) => {
-    updateRoom(room.number, {
-      technicalStatus,
-      alert: technicalStatus === "Réparé" ? undefined : "Problème technique",
-    });
-    showToast(`Chambre ${room.number} · problème technique ${technicalStatus.toLowerCase()}`);
+  const updateTechnicalStatus = async (room: Room, technicalStatus: TechnicalStatus) => {
+    if (!cloudClient || !cloudContext) {
+      showToast("Connexion au socle Raccotel requise.");
+      return;
+    }
+    setTechnicalBusy(true);
+    setTechnicalSyncError(null);
+    try {
+      const existing = await ensureRoomTechnicalIncident(room);
+      const updated = await updateCloudTechnicalIncident(cloudClient, cloudContext, existing.id, {
+        workflowStatus: workflowForTechnicalStatus[technicalStatus],
+      });
+      rememberTechnicalIncident(updated);
+      updateRoom(room.number, {
+        technicalStatus,
+        technicalIncidentId: updated.id,
+        alert: technicalStatus === "Réparé" ? undefined : "Problème technique",
+      });
+      showToast(`Chambre ${room.number} · statut visible dans Technique`);
+    } catch (error: unknown) {
+      setTechnicalSyncError(technicalErrorMessage(error));
+      showToast(technicalErrorMessage(error));
+    } finally {
+      setTechnicalBusy(false);
+    }
   };
 
   const uploadTechnicalPhoto = (room: Room, event: ChangeEvent<HTMLInputElement>) => {
@@ -1325,9 +1601,57 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       updateRoom(room.number, { technicalPhotoName: file.name, technicalPhotoData: String(reader.result) });
-      showToast(`Photo ajoutée au signalement de la chambre ${room.number}`);
+      setPendingRoomPhotos((current) => ({ ...current, [room.number]: file }));
+      showToast("Photo prête · elle sera envoyée en enregistrant");
     };
     reader.readAsDataURL(file);
+  };
+
+  const saveRoomTechnicalDetails = async (room: Room) => {
+    if (room.alert !== "Problème technique" && !room.technicalStatus) {
+      setSelectedRoom(null);
+      showToast(`Chambre ${room.number} enregistrée`);
+      return;
+    }
+    if (!cloudClient || !cloudContext) {
+      showToast("Connexion au socle Raccotel requise.");
+      return;
+    }
+    setTechnicalBusy(true);
+    setTechnicalSyncError(null);
+    try {
+      const existing = await ensureRoomTechnicalIncident(room);
+      const pendingPhoto = pendingRoomPhotos[room.number];
+      const photo = pendingPhoto
+        ? await uploadCloudTechnicalPhoto(cloudClient, cloudContext.hotelId, pendingPhoto)
+        : null;
+      const description = room.floorComment?.trim() || room.receptionComment?.trim() || "";
+      const updated = await updateCloudTechnicalIncident(cloudClient, cloudContext, existing.id, {
+        workflowStatus: workflowForTechnicalStatus[room.technicalStatus ?? "Détecté"],
+        title: description || existing.title,
+        description,
+        ...(photo ? { photoKey: photo.key, photoName: photo.name, photoType: photo.type } : {}),
+      });
+      rememberTechnicalIncident(updated);
+      updateRoom(room.number, {
+        technicalIncidentId: updated.id,
+        technicalPhotoKey: updated.photoKey || undefined,
+        technicalPhotoName: updated.photoName || undefined,
+        technicalPhotoData: photo ? undefined : room.technicalPhotoData,
+      });
+      setPendingRoomPhotos((current) => {
+        const next = { ...current };
+        delete next[room.number];
+        return next;
+      });
+      setSelectedRoom(null);
+      showToast(`Chambre ${room.number} · Housekeeping et Technique synchronisés`);
+    } catch (error: unknown) {
+      setTechnicalSyncError(technicalErrorMessage(error));
+      showToast(technicalErrorMessage(error));
+    } finally {
+      setTechnicalBusy(false);
+    }
   };
 
   const openCommonArea = (area: CommonArea) => {
@@ -1342,6 +1666,7 @@ export default function Home() {
 
   const closeCommonArea = () => {
     setCommonAreaDraft(null);
+    setPendingCommonAreaPhoto(null);
     setCommonAreaErrors({});
   };
 
@@ -1354,6 +1679,9 @@ export default function Home() {
         action: nextAction,
         assignee: nextAction === "Ménage" ? current.assignee : "",
         minutes: nextAction === "Ménage" ? current.minutes : 0,
+        technicalStatus: nextAction === "Problème technique" ? (current.technicalStatus ?? "Détecté") : undefined,
+        technicalIncidentId: nextAction === "Problème technique" ? current.technicalIncidentId : undefined,
+        technicalPhotoKey: nextAction === "Problème technique" ? current.technicalPhotoKey : undefined,
         technicalPhotoName: nextAction === "Problème technique" ? current.technicalPhotoName : undefined,
         technicalPhotoData: nextAction === "Problème technique" ? current.technicalPhotoData : undefined,
       };
@@ -1380,12 +1708,58 @@ export default function Home() {
         technicalPhotoName: file.name,
         technicalPhotoData: String(reader.result),
       } : current);
-      showToast("Photo ajoutée au signalement");
+      setPendingCommonAreaPhoto(file);
+      showToast("Photo prête · elle sera envoyée en enregistrant");
     };
     reader.readAsDataURL(file);
   };
 
-  const saveCommonArea = () => {
+  const updateCommonAreaTechnicalStatus = async (technicalStatus: TechnicalStatus) => {
+    if (!commonAreaDraft || !cloudClient || !cloudContext) return;
+    const existingBeforeUpdate = incidentForLocation("common_area", commonAreaDraft.name);
+    if (!existingBeforeUpdate && !commonAreaDraft.comment?.trim()) {
+      setCommonAreaDraft({ ...commonAreaDraft, technicalStatus });
+      setCommonAreaErrors({ ...commonAreaErrors, comment: true });
+      showToast("Ajoute le commentaire obligatoire puis enregistre le signalement");
+      return;
+    }
+    setTechnicalBusy(true);
+    setTechnicalSyncError(null);
+    try {
+      const existing = existingBeforeUpdate;
+      const incident = existing
+        ? await updateCloudTechnicalIncident(cloudClient, cloudContext, existing.id, {
+            workflowStatus: workflowForTechnicalStatus[technicalStatus],
+          })
+        : await createCloudTechnicalIncident(cloudClient, cloudContext, {
+            workDate,
+            location: commonAreaDraft.name,
+            locationType: "common_area",
+            title: commonAreaDraft.comment?.trim() || "Problème technique",
+            description: commonAreaDraft.comment?.trim() || "",
+          });
+      const updated = incident.workflowStatus === workflowForTechnicalStatus[technicalStatus]
+        ? incident
+        : await updateCloudTechnicalIncident(cloudClient, cloudContext, incident.id, {
+            workflowStatus: workflowForTechnicalStatus[technicalStatus],
+          });
+      rememberTechnicalIncident(updated);
+      setCommonAreaDraft((current) => current ? {
+        ...current,
+        technicalStatus,
+        technicalIncidentId: updated.id,
+        action: technicalStatus === "Réparé" ? current.action : "Problème technique",
+      } : current);
+      showToast(`${commonAreaDraft.name} · statut synchronisé`);
+    } catch (error: unknown) {
+      setTechnicalSyncError(technicalErrorMessage(error));
+      showToast(technicalErrorMessage(error));
+    } finally {
+      setTechnicalBusy(false);
+    }
+  };
+
+  const saveCommonArea = async () => {
     if (!commonAreaDraft) return;
     const errors: CommonAreaErrors = {
       comment: Boolean(commonAreaDraft.action && !commonAreaDraft.comment?.trim()),
@@ -1398,17 +1772,79 @@ export default function Home() {
       return;
     }
 
-    const savedArea: CommonArea = {
+    let savedArea: CommonArea = {
       ...commonAreaDraft,
       comment: commonAreaDraft.action ? commonAreaDraft.comment?.trim() : "",
       assignee: commonAreaDraft.action === "Ménage" ? commonAreaDraft.assignee : "",
       minutes: commonAreaDraft.action === "Ménage" ? commonAreaDraft.minutes : 0,
+      technicalStatus: commonAreaDraft.action === "Problème technique" ? (commonAreaDraft.technicalStatus ?? "Détecté") : undefined,
+      technicalIncidentId: commonAreaDraft.action === "Problème technique" ? commonAreaDraft.technicalIncidentId : undefined,
+      technicalPhotoKey: commonAreaDraft.action === "Problème technique" ? commonAreaDraft.technicalPhotoKey : undefined,
       technicalPhotoName: commonAreaDraft.action === "Problème technique" ? commonAreaDraft.technicalPhotoName : undefined,
       technicalPhotoData: commonAreaDraft.action === "Problème technique" ? commonAreaDraft.technicalPhotoData : undefined,
     };
+
+    const existingIncident = incidentForLocation("common_area", commonAreaDraft.name);
+    if (commonAreaDraft.action === "Problème technique") {
+      if (!cloudClient || !cloudContext) {
+        showToast("Connexion au socle Raccotel requise.");
+        return;
+      }
+      setTechnicalBusy(true);
+      setTechnicalSyncError(null);
+      try {
+        const photo = pendingCommonAreaPhoto
+          ? await uploadCloudTechnicalPhoto(cloudClient, cloudContext.hotelId, pendingCommonAreaPhoto)
+          : null;
+        const baseIncident = existingIncident
+          ? existingIncident
+          : await createCloudTechnicalIncident(cloudClient, cloudContext, {
+              workDate,
+              location: commonAreaDraft.name,
+              locationType: "common_area",
+              title: commonAreaDraft.comment?.trim() || "Problème technique",
+              description: commonAreaDraft.comment?.trim() || "",
+            });
+        const updated = await updateCloudTechnicalIncident(cloudClient, cloudContext, baseIncident.id, {
+          workflowStatus: workflowForTechnicalStatus[commonAreaDraft.technicalStatus ?? "Détecté"],
+          title: commonAreaDraft.comment?.trim() || baseIncident.title,
+          description: commonAreaDraft.comment?.trim() || "",
+          ...(photo ? { photoKey: photo.key, photoName: photo.name, photoType: photo.type } : {}),
+        });
+        rememberTechnicalIncident(updated);
+        savedArea = {
+          ...savedArea,
+          technicalStatus: technicalStatusForWorkflow[updated.workflowStatus],
+          technicalIncidentId: updated.id,
+          technicalPhotoKey: updated.photoKey || undefined,
+          technicalPhotoName: updated.photoName || undefined,
+          technicalPhotoData: photo ? undefined : savedArea.technicalPhotoData,
+        };
+      } catch (error: unknown) {
+        setTechnicalSyncError(technicalErrorMessage(error));
+        showToast(technicalErrorMessage(error));
+        setTechnicalBusy(false);
+        return;
+      }
+      setTechnicalBusy(false);
+    } else if (existingIncident && technicalIncidentIsOpen(existingIncident) && cloudClient && cloudContext) {
+      setTechnicalBusy(true);
+      try {
+        const cancelled = await updateCloudTechnicalIncident(cloudClient, cloudContext, existingIncident.id, {
+          workflowStatus: "cancelled",
+        });
+        rememberTechnicalIncident(cancelled);
+      } catch (error: unknown) {
+        setTechnicalSyncError(technicalErrorMessage(error));
+        showToast(technicalErrorMessage(error));
+        setTechnicalBusy(false);
+        return;
+      }
+      setTechnicalBusy(false);
+    }
     setCommonAreas((current) => current.map((area) => area.id === savedArea.id ? savedArea : area));
     closeCommonArea();
-    showToast(`${savedArea.name} enregistré`);
+    showToast(`${savedArea.name} enregistré dans les deux applications`);
   };
 
   const toggleDashboardSelection = (number: string) => {
@@ -2236,7 +2672,7 @@ export default function Home() {
                 <span>{area.name}</span>
                 <span className="common-card-statuses">
                   {area.action === "Ménage" && <small className="cleaning"><Sparkles size={14} /> Ménage · {area.assignee} · {area.minutes} min</small>}
-                  {area.action === "Problème technique" && <small className="technical"><Wrench size={14} /> Problème technique{area.technicalPhotoName ? " · Photo jointe" : ""}</small>}
+                  {area.action === "Problème technique" && <small className="technical"><Wrench size={14} /> Problème technique · {area.technicalStatus ?? "Détecté"}{area.technicalPhotoName ? " · Photo jointe" : ""}</small>}
                   {area.completed && <small className="controlled"><CheckCircle2 size={14} /> Contrôlé</small>}
                   {!area.action && !area.completed && <small>À renseigner</small>}
                 </span>
@@ -2688,7 +3124,7 @@ export default function Home() {
           </div>
           <aside className="events-card">
             <div className="events-title"><div><h3>Événements</h3><p>Repris dans le rapport PDF</p></div><span>{dayEvents.length}</span></div>
-            {dayEvents.length ? <ol className="event-list">{dayEvents.map((room) => <li key={room.number}><span className={`event-icon ${room.technicalStatus ? "blue" : room.alert === "Refus de service" ? "amber" : "red"}`}>{room.technicalStatus ? <Wrench size={16} /> : <BellRing size={16} />}</span><div><strong>Chambre {room.number} · {roomEventLabel(room)}</strong><p>{room.floorComment ?? room.receptionComment ?? "Sans commentaire"}</p>{room.technicalPhotoData && <img className="event-photo" src={room.technicalPhotoData} alt={`Photo du problème en chambre ${room.number}`} />}<small>{room.technicalStatus === "Réparé" ? "Conservé dans le rapport après réparation" : "Déclaré par la gouvernante"}</small></div></li>)}</ol> : <div className="empty-events"><CheckCircle2 size={24} /><p>Aucun événement déclaré pour le moment.</p></div>}
+            {dayEvents.length ? <ol className="event-list">{dayEvents.map((room) => <li key={room.number}><span className={`event-icon ${room.technicalStatus ? "blue" : room.alert === "Refus de service" ? "amber" : "red"}`}>{room.technicalStatus ? <Wrench size={16} /> : <BellRing size={16} />}</span><div><strong>Chambre {room.number} · {roomEventLabel(room)}</strong><p>{room.floorComment ?? room.receptionComment ?? "Sans commentaire"}</p>{roomPhotoSource(room) && <img className="event-photo" src={roomPhotoSource(room)} alt={`Photo du problème en chambre ${room.number}`} />}<small>{room.technicalStatus === "Réparé" ? "Conservé dans le rapport après réparation" : "Synchronisé avec Raccotel Technique"}</small></div></li>)}</ol> : <div className="empty-events"><CheckCircle2 size={24} /><p>Aucun événement déclaré pour le moment.</p></div>}
             <label className={`report-comment-field ${reportCommentError ? "error" : ""}`}>
               <span>Commentaire de la gouvernante <b>obligatoire</b></span>
               <textarea value={reportComment} onChange={(event) => { setReportComment(event.target.value); if (event.target.value.trim()) setReportCommentError(false); }} placeholder="Événements de la journée ou RAS" />
@@ -2889,20 +3325,34 @@ export default function Home() {
                       const currentIndex = Math.max(0, technicalSteps.findIndex((candidate) => candidate.value === (currentRoom.technicalStatus ?? "Détecté")));
                       const complete = index <= currentIndex;
                       const current = step.value === (currentRoom.technicalStatus ?? "Détecté");
-                      return <button key={step.value} className={`${complete ? "complete" : ""} ${current ? "current" : ""}`} aria-pressed={current} onClick={() => updateTechnicalStatus(currentRoom, step.value)}>{complete ? <Check size={14} /> : <span className="technical-step-dot" />}{step.label}</button>;
+                      return <button key={step.value} disabled={technicalBusy} className={`${complete ? "complete" : ""} ${current ? "current" : ""}`} aria-pressed={current} onClick={() => void updateTechnicalStatus(currentRoom, step.value)}>{complete ? <Check size={14} /> : <span className="technical-step-dot" />}{step.label}</button>;
                     })}
                   </div>
                   <label className="technical-photo-upload">
                     <input type="file" accept="image/*" capture="environment" onChange={(event) => uploadTechnicalPhoto(currentRoom, event)} />
-                    {currentRoom.technicalPhotoData
-                      ? <><img src={currentRoom.technicalPhotoData} alt="Photo du problème technique" /><span><ImagePlus size={16} /> Remplacer la photo</span></>
+                    {currentRoomPhoto
+                      ? <><img src={currentRoomPhoto} alt="Photo du problème technique" /><span><ImagePlus size={16} /> Remplacer la photo</span></>
                       : <span><ImagePlus size={18} /> Ajouter une photo <small>Facultatif · 5 Mo maximum</small></span>}
                   </label>
+                  {currentRoomIncident && (
+                    <div className="technical-shared-card">
+                      <div><Wrench size={16} /><strong>Suivi commun Raccotel</strong><span>{technicalWorkflowLabels[currentRoomIncident.workflowStatus]}</span></div>
+                      <p>{currentRoomIncident.description || "Aucune précision au signalement."}</p>
+                      {currentRoomIncident.comment && <blockquote>{currentRoomIncident.comment}</blockquote>}
+                      {currentRoomIncident.assignee && <small>Attribué à {currentRoomIncident.assignee}</small>}
+                      <ol className="technical-history">
+                        {activityForIncident(currentRoomIncident.id).slice(0, 8).map((entry) => (
+                          <li key={entry.id}><span>{entry.action}</span><p>{entry.detail}</p><small>{entry.actor} · {new Date(entry.createdAt).toLocaleString("fr-FR")}</small></li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+                  {technicalSyncError && <p className="technical-sync-error"><CircleAlert size={15} /> {technicalSyncError}</p>}
                 </>
               )}
             </section>
             <section className="drawer-section comments-section"><label><span>Commentaire gouvernante (interne)</span><textarea value={currentRoom.floorComment ?? ""} onChange={(event) => updateRoom(currentRoom.number, { floorComment: event.target.value })} placeholder="Observation ou suivi interne…" /></label></section>
-            <footer className="drawer-footer"><button className="button secondary" onClick={() => setSelectedRoom(null)}>Fermer</button><button className="button primary" onClick={() => { setSelectedRoom(null); showToast(`Chambre ${currentRoom.number} enregistrée`); }}><Check size={18} /> Enregistrer</button></footer>
+            <footer className="drawer-footer"><button className="button secondary" disabled={technicalBusy} onClick={() => setSelectedRoom(null)}>Fermer</button><button className="button primary" disabled={technicalBusy} onClick={() => void saveRoomTechnicalDetails(currentRoom)}><Check size={18} /> {technicalBusy ? "Synchronisation…" : "Enregistrer"}</button></footer>
           </aside>
         </div>
       )}
@@ -2953,6 +3403,15 @@ export default function Home() {
             {commonAreaDraft.action === "Problème technique" && (
               <section className="drawer-section common-area-form">
                 <div className="drawer-section-title"><h3>Problème technique</h3><span>Commentaire obligatoire</span></div>
+                <div className="technical-flow" role="group" aria-label="Suivi du problème technique">
+                  {technicalSteps.map((step, index) => {
+                    const status = commonAreaDraft.technicalStatus ?? technicalStatusForWorkflow[currentCommonAreaIncident?.workflowStatus ?? "detected"];
+                    const currentIndex = Math.max(0, technicalSteps.findIndex((candidate) => candidate.value === status));
+                    const complete = index <= currentIndex;
+                    const current = step.value === status;
+                    return <button key={step.value} disabled={technicalBusy} className={`${complete ? "complete" : ""} ${current ? "current" : ""}`} aria-pressed={current} onClick={() => void updateCommonAreaTechnicalStatus(step.value)}>{complete ? <Check size={14} /> : <span className="technical-step-dot" />}{step.label}</button>;
+                  })}
+                </div>
                 <label className={commonAreaErrors.comment ? "field-error full-comment" : "full-comment"}>
                   <span>Commentaire *</span>
                   <textarea value={commonAreaDraft.comment ?? ""} onChange={(event) => { setCommonAreaDraft({ ...commonAreaDraft, comment: event.target.value }); setCommonAreaErrors({ ...commonAreaErrors, comment: false }); }} placeholder="Décris précisément le problème constaté…" aria-invalid={commonAreaErrors.comment} />
@@ -2960,14 +3419,27 @@ export default function Home() {
                 </label>
                 <label className="technical-photo-upload">
                   <input type="file" accept="image/*" capture="environment" onChange={uploadCommonAreaTechnicalPhoto} />
-                  {commonAreaDraft.technicalPhotoData
-                    ? <><img src={commonAreaDraft.technicalPhotoData} alt={`Photo du problème technique dans ${commonAreaDraft.name}`} /><span><ImagePlus size={16} /> Remplacer la photo</span></>
+                  {currentCommonAreaPhoto
+                    ? <><img src={currentCommonAreaPhoto} alt={`Photo du problème technique dans ${commonAreaDraft.name}`} /><span><ImagePlus size={16} /> Remplacer la photo</span></>
                     : <span><ImagePlus size={18} /> Ajouter une photo <small>Facultatif · 5 Mo maximum</small></span>}
                 </label>
+                {currentCommonAreaIncident && (
+                  <div className="technical-shared-card">
+                    <div><Wrench size={16} /><strong>Suivi commun Raccotel</strong><span>{technicalWorkflowLabels[currentCommonAreaIncident.workflowStatus]}</span></div>
+                    {currentCommonAreaIncident.comment && <blockquote>{currentCommonAreaIncident.comment}</blockquote>}
+                    {currentCommonAreaIncident.assignee && <small>Attribué à {currentCommonAreaIncident.assignee}</small>}
+                    <ol className="technical-history">
+                      {activityForIncident(currentCommonAreaIncident.id).slice(0, 8).map((entry) => (
+                        <li key={entry.id}><span>{entry.action}</span><p>{entry.detail}</p><small>{entry.actor} · {new Date(entry.createdAt).toLocaleString("fr-FR")}</small></li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+                {technicalSyncError && <p className="technical-sync-error"><CircleAlert size={15} /> {technicalSyncError}</p>}
               </section>
             )}
 
-            <footer className="drawer-footer"><button className="button secondary" onClick={closeCommonArea}>Annuler</button><button className="button primary" onClick={saveCommonArea}><Check size={18} /> Enregistrer</button></footer>
+            <footer className="drawer-footer"><button className="button secondary" disabled={technicalBusy} onClick={closeCommonArea}>Annuler</button><button className="button primary" disabled={technicalBusy} onClick={() => void saveCommonArea()}><Check size={18} /> {technicalBusy ? "Synchronisation…" : "Enregistrer"}</button></footer>
           </aside>
         </div>
       )}

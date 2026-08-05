@@ -5477,6 +5477,91 @@ select:disabled {
   width: 100%;
 }
 
+.technical-shared-card {
+  background: #f5f9f9;
+  border: 1px solid #cfe2e1;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.technical-shared-card > div {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.technical-shared-card > div span {
+  background: #dcefee;
+  border-radius: 999px;
+  color: var(--teal-dark);
+  font-size: 9px;
+  font-weight: 750;
+  margin-left: auto;
+  padding: 4px 8px;
+}
+
+.technical-shared-card > p,
+.technical-shared-card blockquote {
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.technical-shared-card blockquote {
+  border-left: 3px solid var(--teal);
+  color: var(--muted);
+  padding-left: 9px;
+}
+
+.technical-history {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 3px 0 0;
+  padding: 0;
+}
+
+.technical-history li {
+  border-top: 1px solid #dfe9e8;
+  display: grid;
+  gap: 2px;
+  padding-top: 7px;
+}
+
+.technical-history li span {
+  color: var(--teal-dark);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.technical-history li p,
+.technical-history li small {
+  font-size: 9px;
+  margin: 0;
+}
+
+.technical-history li small {
+  color: var(--muted);
+}
+
+.technical-sync-error {
+  align-items: center;
+  background: #fff1f0;
+  border: 1px solid #f1c2bd;
+  border-radius: 8px;
+  color: #9b3028;
+  display: flex;
+  font-size: 10px;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding: 9px;
+}
+
 .event-photo {
   border: 1px solid var(--border);
   border-radius: 7px;
