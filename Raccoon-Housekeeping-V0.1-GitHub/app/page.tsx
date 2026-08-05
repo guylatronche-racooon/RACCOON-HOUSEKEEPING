@@ -1071,19 +1071,49 @@ export default function Home() {
 
   useEffect(() => {
     if (!cloudClient || !cloudContext) return;
+    let active = true;
+    let refreshRunning = false;
+    let refreshQueued = false;
+    let reconnectTimer: number | null = null;
+
     const refreshTechnicalData = async () => {
+      if (!active) return;
+      if (refreshRunning) {
+        refreshQueued = true;
+        return;
+      }
+      refreshRunning = true;
       try {
         const [incidents, history] = await Promise.all([
           listCloudTechnicalIncidents(cloudClient, cloudContext.hotelId),
           listCloudTechnicalActivity(cloudClient, cloudContext.hotelId),
         ]);
+        if (!active) return;
         setTechnicalIncidents(incidents);
         setTechnicalActivity(history);
         setTechnicalSyncError(null);
       } catch (error: unknown) {
+        if (!active) return;
         setTechnicalSyncError(error instanceof Error ? error.message : "Synchronisation technique indisponible.");
+      } finally {
+        refreshRunning = false;
+        if (active && refreshQueued) {
+          refreshQueued = false;
+          void refreshTechnicalData();
+        }
       }
     };
+
+    const reconnectAndRefresh = () => {
+      if (!active) return;
+      if (!cloudClient.realtime.isConnected()) cloudClient.realtime.connect();
+      void refreshTechnicalData();
+    };
+
+    const handleResume = () => {
+      if (document.visibilityState === "visible") reconnectAndRefresh();
+    };
+
     const channel = cloudClient
       .channel(`raccotel-technique-${cloudContext.hotelId}`)
       .on("postgres_changes", {
@@ -1098,8 +1128,33 @@ export default function Home() {
         table: "raccotel_technique_activity",
         filter: `hotel_id=eq.${cloudContext.hotelId}`,
       }, () => void refreshTechnicalData())
-      .subscribe();
+      .subscribe((status, error) => {
+        if (!active) return;
+        if (status === "SUBSCRIBED") {
+          void refreshTechnicalData();
+          return;
+        }
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          setTechnicalSyncError(error?.message || "Reconnexion automatique au suivi Technique…");
+          if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+          reconnectTimer = window.setTimeout(reconnectAndRefresh, 1_500);
+        }
+      });
+
+    document.addEventListener("visibilitychange", handleResume);
+    window.addEventListener("focus", reconnectAndRefresh);
+    window.addEventListener("online", reconnectAndRefresh);
+    const safetyRefresh = window.setInterval(() => {
+      if (document.visibilityState === "visible") reconnectAndRefresh();
+    }, 45_000);
+
     return () => {
+      active = false;
+      document.removeEventListener("visibilitychange", handleResume);
+      window.removeEventListener("focus", reconnectAndRefresh);
+      window.removeEventListener("online", reconnectAndRefresh);
+      window.clearInterval(safetyRefresh);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       cloudClient.removeChannel(channel);
     };
   }, [cloudClient, cloudContext]);
