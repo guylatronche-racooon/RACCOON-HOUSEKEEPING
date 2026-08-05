@@ -20,6 +20,18 @@ test("Housekeeping and Technique use one tenant-scoped intervention register", (
   assert.match(page, /postgres_changes/);
 });
 
+test("Housekeeping keeps the Technique live connection healthy without a manual refresh", () => {
+  assert.match(cloud, /worker:\s*true/);
+  assert.match(cloud, /heartbeatCallback/);
+  assert.match(cloud, /browserClient\?\.realtime\.connect\(\)/);
+  assert.match(page, /subscribe\(\(status, error\) =>/);
+  assert.match(page, /status === "CHANNEL_ERROR" \|\| status === "TIMED_OUT" \|\| status === "CLOSED"/);
+  assert.match(page, /document\.addEventListener\("visibilitychange", handleResume\)/);
+  assert.match(page, /window\.addEventListener\("focus", reconnectAndRefresh\)/);
+  assert.match(page, /window\.addEventListener\("online", reconnectAndRefresh\)/);
+  assert.match(page, /window\.setInterval\([\s\S]*45_000\)/);
+});
+
 test("the shared workflow carries status, history and private photos both ways", () => {
   assert.match(cloud, /"detected"[\s\S]*"reported"[\s\S]*"in_progress"[\s\S]*"repaired"[\s\S]*"cancelled"/);
   assert.match(cloud, /createSignedUrl\(key, 60 \* 60\)/);
