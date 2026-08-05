@@ -170,6 +170,14 @@ export function getCloudClient() {
       autoRefreshToken: true,
       detectSessionInUrl: true,
     },
+    realtime: {
+      worker: true,
+      heartbeatCallback: (status) => {
+        if (status === "disconnected" || status === "timeout") {
+          browserClient?.realtime.connect();
+        }
+      },
+    },
   });
   return browserClient;
 }
