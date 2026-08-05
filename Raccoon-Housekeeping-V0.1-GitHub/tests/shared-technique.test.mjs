@@ -30,6 +30,26 @@ test("the shared workflow carries status, history and private photos both ways",
   assert.match(page, /Housekeeping et Technique synchronisés/);
 });
 
+test("the shared register stays authoritative after the Housekeeping day snapshot loads", () => {
+  assert.match(page, /\[hydrated, technicalIncidents, workDate\]/);
+  assert.match(page, /currentRoomIncident\s*\?\s*technicalStatusForWorkflow\[currentRoomIncident\.workflowStatus\]/s);
+  assert.match(page, /currentCommonAreaIncident\s*\?\s*technicalStatusForWorkflow\[currentCommonAreaIncident\.workflowStatus\]/s);
+  assert.match(page, /currentRoom\.alert === "Problème technique" \|\| currentRoomIncident/);
+});
+
+test("saving details cannot overwrite a status already changed by Technique", () => {
+  const roomSave = page.slice(
+    page.indexOf("const saveRoomTechnicalDetails"),
+    page.indexOf("const openCommonArea"),
+  );
+  const commonSave = page.slice(
+    page.indexOf("const saveCommonArea"),
+    page.indexOf("const closeCommonArea"),
+  );
+  assert.doesNotMatch(roomSave, /workflowStatus:/);
+  assert.doesNotMatch(commonSave, /workflowStatus:/);
+});
+
 test("the migration imports existing Housekeeping incidents without duplication", () => {
   assert.match(migration, /jsonb_array_elements\(coalesce\(d\.payload->'rooms'/);
   assert.match(migration, /jsonb_array_elements\(coalesce\(d\.payload->'commonAreas'/);

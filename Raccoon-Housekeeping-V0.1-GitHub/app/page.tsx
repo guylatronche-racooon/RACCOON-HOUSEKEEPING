@@ -692,12 +692,18 @@ export default function Home() {
       && (technicalIncidentIsOpen(incident) || incident.reportedForDate === workDate)
     ) ?? null;
   const currentRoomIncident = currentRoom ? incidentForLocation("room", currentRoom.number) : null;
+  const currentRoomTechnicalStatus = currentRoomIncident
+    ? technicalStatusForWorkflow[currentRoomIncident.workflowStatus]
+    : currentRoom?.technicalStatus ?? "Détecté";
   const currentRoomPhoto = currentRoomIncident?.photoKey
     ? technicalPhotoUrls[currentRoomIncident.id]
     : currentRoom?.technicalPhotoData;
   const currentCommonAreaIncident = commonAreaDraft
     ? incidentForLocation("common_area", commonAreaDraft.name)
     : null;
+  const currentCommonAreaTechnicalStatus = currentCommonAreaIncident
+    ? technicalStatusForWorkflow[currentCommonAreaIncident.workflowStatus]
+    : commonAreaDraft?.technicalStatus ?? "Détecté";
   const currentCommonAreaPhoto = currentCommonAreaIncident?.photoKey
     ? technicalPhotoUrls[currentCommonAreaIncident.id]
     : commonAreaDraft?.technicalPhotoData;
@@ -1153,7 +1159,7 @@ export default function Home() {
       }));
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [technicalIncidents, workDate]);
+  }, [hydrated, technicalIncidents, workDate]);
 
   useEffect(() => {
     if (cloudClient && !cloudContext) return;
@@ -1627,7 +1633,6 @@ export default function Home() {
         : null;
       const description = room.floorComment?.trim() || room.receptionComment?.trim() || "";
       const updated = await updateCloudTechnicalIncident(cloudClient, cloudContext, existing.id, {
-        workflowStatus: workflowForTechnicalStatus[room.technicalStatus ?? "Détecté"],
         title: description || existing.title,
         description,
         ...(photo ? { photoKey: photo.key, photoName: photo.name, photoType: photo.type } : {}),
@@ -1806,7 +1811,6 @@ export default function Home() {
               description: commonAreaDraft.comment?.trim() || "",
             });
         const updated = await updateCloudTechnicalIncident(cloudClient, cloudContext, baseIncident.id, {
-          workflowStatus: workflowForTechnicalStatus[commonAreaDraft.technicalStatus ?? "Détecté"],
           title: commonAreaDraft.comment?.trim() || baseIncident.title,
           description: commonAreaDraft.comment?.trim() || "",
           ...(photo ? { photoKey: photo.key, photoName: photo.name, photoType: photo.type } : {}),
@@ -3318,13 +3322,13 @@ export default function Home() {
             <section className="drawer-section">
               <div className="drawer-section-title"><h3>Signalement</h3><span>Événement de la journée</span></div>
               <div className="incident-options">{(["DND", "Refus de service", "Problème technique"] as const).map((alert) => <button key={alert} className={currentRoom.alert === alert ? "selected" : ""} onClick={() => toggleRoomAlert(currentRoom, alert)}>{alert === "Problème technique" ? <Wrench size={16} /> : <TriangleAlert size={16} />}{alert}</button>)}</div>
-              {currentRoom.alert === "Problème technique" && (
+              {(currentRoom.alert === "Problème technique" || currentRoomIncident) && (
                 <>
                   <div className="technical-flow" role="group" aria-label="Suivi du problème technique">
                     {technicalSteps.map((step, index) => {
-                      const currentIndex = Math.max(0, technicalSteps.findIndex((candidate) => candidate.value === (currentRoom.technicalStatus ?? "Détecté")));
+                      const currentIndex = Math.max(0, technicalSteps.findIndex((candidate) => candidate.value === currentRoomTechnicalStatus));
                       const complete = index <= currentIndex;
-                      const current = step.value === (currentRoom.technicalStatus ?? "Détecté");
+                      const current = step.value === currentRoomTechnicalStatus;
                       return <button key={step.value} disabled={technicalBusy} className={`${complete ? "complete" : ""} ${current ? "current" : ""}`} aria-pressed={current} onClick={() => void updateTechnicalStatus(currentRoom, step.value)}>{complete ? <Check size={14} /> : <span className="technical-step-dot" />}{step.label}</button>;
                     })}
                   </div>
@@ -3405,7 +3409,7 @@ export default function Home() {
                 <div className="drawer-section-title"><h3>Problème technique</h3><span>Commentaire obligatoire</span></div>
                 <div className="technical-flow" role="group" aria-label="Suivi du problème technique">
                   {technicalSteps.map((step, index) => {
-                    const status = commonAreaDraft.technicalStatus ?? technicalStatusForWorkflow[currentCommonAreaIncident?.workflowStatus ?? "detected"];
+                    const status = currentCommonAreaTechnicalStatus;
                     const currentIndex = Math.max(0, technicalSteps.findIndex((candidate) => candidate.value === status));
                     const complete = index <= currentIndex;
                     const current = step.value === status;
