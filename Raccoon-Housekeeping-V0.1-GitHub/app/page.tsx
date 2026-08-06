@@ -69,6 +69,8 @@ type Progress = "À faire" | "En cours" | "Terminée" | "Contrôlée" | "Validé
 type DeliveryMethod = "phone" | "pdf";
 type DayIntervention = "À blanc" | "Recouche" | "Libre";
 type DistributionStep = "team" | "assign";
+type DistributionInterventionFilter = "all" | "blank" | "stayover";
+type DistributionAssigneeFilter = "all" | "unassigned" | string;
 type DepartureState = "Présent" | "Parti";
 type PersonnelView = "active" | "archived";
 type TechnicalStatus = "Détecté" | "Signalé" | "En cours" | "Réparé";
@@ -123,6 +125,7 @@ type Room = {
 type CommonArea = {
   id: string;
   name: string;
+  active?: boolean;
   completed: boolean;
   action?: CommonAreaAction;
   comment?: string;
@@ -238,6 +241,7 @@ const permanentSettingsStorageKey = `${LOCAL_STORAGE_PREFIX}:permanent:hotel-set
 
 type PermanentHotelSettings = Pick<AppSnapshot,
   | "accounts"
+  | "commonAreas"
   | "blankMinutes"
   | "stayoverMinutes"
   | "defaultPauseMinutes"
@@ -279,6 +283,29 @@ function permanentRoomRecord(room: Room): Room {
     receptionComment: undefined,
     floorComment: undefined,
   };
+}
+
+function permanentCommonAreaRecord(area: CommonArea): CommonArea {
+  return {
+    id: area.id,
+    name: area.name,
+    active: area.active !== false,
+    completed: false,
+  };
+}
+
+function mergeCommonAreasWithPermanent(dayAreas: CommonArea[], permanentAreas: CommonArea[]) {
+  const source = permanentAreas.length ? permanentAreas : dayAreas;
+  return source.map((profile) => {
+    const day = dayAreas.find((area) => area.id === profile.id || area.name === profile.name);
+    return {
+      ...profile,
+      ...(day ?? {}),
+      id: profile.id,
+      name: profile.name,
+      active: profile.active !== false,
+    };
+  });
 }
 
 function mergeRoomsWithPermanent(dayRooms: Room[], permanentRooms: Room[], outOfServiceRooms: Set<string>) {
@@ -540,14 +567,27 @@ function employeeFullName(employee: Employee) {
   return [employee.name, employee.lastName].filter(Boolean).join(" ");
 }
 
-function employeeAnnexMinutes(employee: Employee) {
-  return employee.annexTasks.reduce((total, task) => total + task.minutes, 0);
+function employeeCommonAreaTasks(employee: Employee, commonAreas: CommonArea[]) {
+  return commonAreas.filter((area) => area.active !== false && area.action === "Ménage" && area.assignee === employee.name);
 }
 
-function employeeAnnexSummary(employee: Employee) {
-  const tasks = employee.annexTasks.filter((task) => task.label.trim() || task.minutes);
+function employeeAnnexMinutes(employee: Employee, commonAreas: CommonArea[] = []) {
+  const annexMinutes = employee.annexTasks.reduce((total, task) => total + task.minutes, 0);
+  const commonMinutes = employeeCommonAreaTasks(employee, commonAreas)
+    .reduce((total, area) => total + (area.minutes ?? 0), 0);
+  return annexMinutes + commonMinutes;
+}
+
+function employeeAnnexSummary(employee: Employee, commonAreas: CommonArea[] = []) {
+  const tasks = [
+    ...employee.annexTasks
+      .filter((task) => task.label.trim() || task.minutes)
+      .map((task) => `${task.label.trim() || "Tâche sans nom"} (${task.minutes} min)`),
+    ...employeeCommonAreaTasks(employee, commonAreas)
+      .map((area) => `${area.name}${area.comment?.trim() ? ` · ${area.comment.trim()}` : ""} (${area.minutes ?? 0} min)`),
+  ];
   return tasks.length
-    ? tasks.map((task) => `${task.label.trim() || "Tâche sans nom"} (${task.minutes} min)`).join(" · ")
+    ? tasks.join(" · ")
     : "Aucune tâche";
 }
 
@@ -626,6 +666,8 @@ export default function Home() {
   const [hotelLogo, setHotelLogo] = useState("/hotel-les-chevaliers.png");
   const [groupLogo, setGroupLogo] = useState("/sowell-hotels.png");
   const [distributionStep, setDistributionStep] = useState<DistributionStep>("team");
+  const [distributionInterventionFilter, setDistributionInterventionFilter] = useState<DistributionInterventionFilter>("all");
+  const [distributionAssigneeFilter, setDistributionAssigneeFilter] = useState<DistributionAssigneeFilter>("all");
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [commonAreaDraft, setCommonAreaDraft] = useState<CommonArea | null>(null);
   const [commonAreaErrors, setCommonAreaErrors] = useState<CommonAreaErrors>({});
@@ -647,6 +689,7 @@ export default function Home() {
   const [reportCommentError, setReportCommentError] = useState(false);
   const [predefinedInstructions, setPredefinedInstructions] = useState(initialPredefinedInstructions);
   const [newPredefinedInstruction, setNewPredefinedInstruction] = useState("");
+  const [newCommonAreaName, setNewCommonAreaName] = useState("");
   const [newEmployee, setNewEmployee] = useState({ name: "", lastName: "", contract: "30 h", start: "09:30", end: "16:00", pause: defaultPauseMinutes, delivery: "pdf" as DeliveryMethod });
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountEmail, setNewAccountEmail] = useState("");
@@ -668,7 +711,7 @@ export default function Home() {
   const [cloudSettingsReady, setCloudSettingsReady] = useState(!cloudClient);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authMode, setAuthMode] = useState<"login" | "signup" | "forgot" | "recovery">("login");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [technicalIncidents, setTechnicalIncidents] = useState<CloudTechnicalIncident[]>([]);
@@ -841,8 +884,8 @@ export default function Home() {
   }, [blankMinutes, rooms, stayoverMinutes]);
   const presentEmployees = useMemo(() => employees.filter((employee) => employee.active && employee.presentToday), [employees]);
   const totalAvailableMinutes = useMemo(
-    () => presentEmployees.reduce((total, employee) => total + Math.max(0, employee.presenceMinutes - employee.pause - employeeAnnexMinutes(employee)), 0),
-    [presentEmployees],
+    () => presentEmployees.reduce((total, employee) => total + Math.max(0, employee.presenceMinutes - employee.pause - employeeAnnexMinutes(employee, commonAreas)), 0),
+    [commonAreas, presentEmployees],
   );
   const averageRoomMinutes = prepStats.serviceRooms ? prepStats.workloadMinutes / prepStats.serviceRooms : 17.5;
   const reportRows = useMemo(() => employees.filter((employee) => employee.active && employee.presentToday).map((employee) => {
@@ -851,7 +894,7 @@ export default function Home() {
     const stayovers = employeeRooms.filter((room) => room.intervention === "Recouche").length;
     const roomCount = blanks + stayovers;
     const theoretical = blanks * blankMinutes + stayovers * stayoverMinutes;
-    const annexMinutes = employeeAnnexMinutes(employee);
+    const annexMinutes = employeeAnnexMinutes(employee, commonAreas);
     const netDay = Math.max(0, employee.presenceMinutes - employee.pause);
     const available = Math.max(0, netDay - annexMinutes);
     const totalCharge = theoretical + annexMinutes;
@@ -862,7 +905,7 @@ export default function Home() {
       rooms: roomCount,
       presence: employee.presenceMinutes,
       pause: employee.pause,
-      annex: employeeAnnexSummary(employee),
+      annex: employeeAnnexSummary(employee, commonAreas),
       annexMinutes,
       theoretical,
       totalCharge,
@@ -871,13 +914,13 @@ export default function Home() {
       cadence: available ? roomCount / (available / 60) : 0,
       load: netDay ? (totalCharge / netDay) * 100 : 0,
     };
-  }), [blankMinutes, employees, rooms, stayoverMinutes]);
+  }), [blankMinutes, commonAreas, employees, rooms, stayoverMinutes]);
   const dayEvents = useMemo(() => rooms.filter((room) => Boolean(room.alert) || room.technicalStatus === "Réparé"), [rooms]);
 
   const assignmentStats = useMemo(() => presentEmployees.map((employee) => {
     const assignedRooms = rooms.filter((room) => room.housekeeper === employee.name && (room.intervention === "À blanc" || room.intervention === "Recouche"));
     const roomWorkload = assignedRooms.reduce((total, room) => total + (room.intervention === "À blanc" ? blankMinutes : stayoverMinutes), 0);
-    const annexWorkload = employeeAnnexMinutes(employee);
+    const annexWorkload = employeeAnnexMinutes(employee, commonAreas);
     const workload = roomWorkload + annexWorkload;
     const available = Math.max(0, employee.presenceMinutes - employee.pause);
     const floors = Array.from(new Set(assignedRooms.map((room) => room.number.charAt(0)).filter(Boolean))).sort();
@@ -891,7 +934,7 @@ export default function Home() {
       floors,
       loadRate: available ? workload / available : 0,
     };
-  }), [blankMinutes, presentEmployees, rooms, stayoverMinutes]);
+  }), [blankMinutes, commonAreas, presentEmployees, rooms, stayoverMinutes]);
 
   const distributionAlerts = useMemo<DistributionAlert[]>(() => {
     const alerts: DistributionAlert[] = [];
@@ -991,8 +1034,13 @@ export default function Home() {
       setAuthUserEmail(data.session?.user.email ?? null);
       setAuthReady(true);
     });
-    const { data: subscription } = cloudClient.auth.onAuthStateChange((_event, session) => {
+    const { data: subscription } = cloudClient.auth.onAuthStateChange((event, session) => {
       if (!active) return;
+      if (event === "PASSWORD_RECOVERY") {
+        setAuthMode("recovery");
+        setAuthPassword("");
+        setAuthError(null);
+      }
       setAuthUserEmail(session?.user.email ?? null);
       if (!session) {
         setCloudContext(null);
@@ -1293,11 +1341,18 @@ export default function Home() {
       writeEmployeeDirectory(directory);
       writePersistentOutOfServiceRooms(persistentOutOfService);
       if (permanentSettings) writePermanentHotelSettings(permanentSettings);
+      const permanentCommonAreas = Array.isArray(permanentSettings?.commonAreas)
+        ? permanentSettings.commonAreas.map(permanentCommonAreaRecord)
+        : [];
+      const settingsWithoutCommonAreas = permanentSettings
+        ? Object.fromEntries(Object.entries(permanentSettings).filter(([key]) => key !== "commonAreas")) as Omit<PermanentHotelSettings, "commonAreas">
+        : null;
       selectedSnapshot = {
         ...selectedSnapshot,
-        ...(permanentSettings ?? {}),
+        ...(settingsWithoutCommonAreas ?? {}),
         employees: mergeEmployeesWithDirectory(selectedSnapshot.employees ?? [], directory),
         rooms: mergeRoomsWithPermanent(selectedSnapshot.rooms ?? [], permanentRooms, persistentOutOfService),
+        commonAreas: mergeCommonAreasWithPermanent(selectedSnapshot.commonAreas ?? [], permanentCommonAreas),
       };
 
       if (!active) return;
@@ -1325,6 +1380,7 @@ export default function Home() {
     if (!hydrated) return;
     const permanentSettings: PermanentHotelSettings = {
       accounts,
+      commonAreas: commonAreas.map(permanentCommonAreaRecord),
       blankMinutes,
       stayoverMinutes,
       defaultPauseMinutes,
@@ -1337,7 +1393,7 @@ export default function Home() {
       predefinedInstructions,
     };
     writePermanentHotelSettings(permanentSettings);
-  }, [accounts, alertSettings, blankMinutes, defaultPauseMinutes, groupLogo, groupName, hotelAddress, hotelLogo, hotelName, hydrated, predefinedInstructions, stayoverMinutes]);
+  }, [accounts, alertSettings, blankMinutes, commonAreas, defaultPauseMinutes, groupLogo, groupName, hotelAddress, hotelLogo, hotelName, hydrated, predefinedInstructions, stayoverMinutes]);
 
   useEffect(() => {
     if (!hydrated || !cloudClient || !cloudContext || !cloudSettingsReady) return;
@@ -1352,6 +1408,7 @@ export default function Home() {
       schemaVersion: 2,
       employees: directory.map(employeeDirectoryRecord),
       rooms: rooms.map(permanentRoomRecord),
+      commonAreas: commonAreas.map(permanentCommonAreaRecord),
       outOfServiceRooms,
       accounts,
       blankMinutes,
@@ -1383,7 +1440,7 @@ export default function Home() {
       setSyncStatus("synced");
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [accounts, alertSettings, appSnapshot, blankMinutes, cloudClient, cloudContext, cloudSettingsReady, defaultPauseMinutes, employees, groupLogo, groupName, hotelAddress, hotelLogo, hotelName, hydrated, predefinedInstructions, rooms, stayoverMinutes]);
+  }, [accounts, alertSettings, appSnapshot, blankMinutes, cloudClient, cloudContext, cloudSettingsReady, commonAreas, defaultPauseMinutes, employees, groupLogo, groupName, hotelAddress, hotelLogo, hotelName, hydrated, predefinedInstructions, rooms, stayoverMinutes]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1466,7 +1523,7 @@ export default function Home() {
 
   const submitCloudAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!cloudClient || !authEmail.trim() || authPassword.length < 6) return;
+    if (!cloudClient || !authEmail.trim() || authPassword.length < 6 || (authMode !== "login" && authMode !== "signup")) return;
     setAuthBusy(true);
     setAuthError(null);
     const credentials = { email: authEmail.trim().toLowerCase(), password: authPassword };
@@ -1485,6 +1542,46 @@ export default function Home() {
       setAuthError("Compte créé. Si la confirmation e-mail est activée, ouvre le message reçu avant de te connecter.");
       setAuthMode("login");
     }
+  };
+
+  const requestPasswordReset = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!cloudClient || !authEmail.trim()) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    const email = authEmail.trim().toLowerCase();
+    const { error } = await cloudClient.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/`,
+    });
+    if (!error) {
+      void fetch("/api/auth/reset-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+    }
+    setAuthBusy(false);
+    setAuthError(error
+      ? "La demande n’a pas pu être envoyée pour le moment. Réessaie dans quelques minutes."
+      : "Si cette adresse correspond à un compte autorisé, le lien de réinitialisation vient d’être envoyé. L’administrateur a aussi été informé.");
+  };
+
+  const submitRecoveryPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!cloudClient || authPassword.length < 6) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    const { error } = await cloudClient.auth.updateUser({ password: authPassword });
+    setAuthBusy(false);
+    if (error) {
+      setAuthError("Le mot de passe n’a pas pu être modifié. Demande un nouveau lien.");
+      return;
+    }
+    await cloudClient.auth.signOut();
+    setAuthUserEmail(null);
+    setAuthPassword("");
+    setAuthMode("login");
+    setAuthError("Mot de passe modifié. Tu peux maintenant te connecter.");
   };
 
   const signOutCloud = async () => {
@@ -1981,6 +2078,51 @@ export default function Home() {
     showToast("Consigne prédéfinie ajoutée");
   };
 
+  const addCommonAreaSetting = () => {
+    const name = newCommonAreaName.trim();
+    if (!name) return;
+    if (commonAreas.some((area) => area.name.toLocaleLowerCase("fr") === name.toLocaleLowerCase("fr"))) {
+      showToast("Cette partie commune existe déjà");
+      return;
+    }
+    setCommonAreas((current) => [...current, { id: crypto.randomUUID(), name, active: true, completed: false }]);
+    setNewCommonAreaName("");
+    showToast(`${name} ajouté au référentiel partagé`);
+  };
+
+  const renameCommonAreaSetting = (area: CommonArea, name: string) => {
+    const nextName = name.trim();
+    if (!nextName || nextName === area.name) return;
+    if (technicalIncidents.some((incident) => incident.locationType === "common_area" && incident.location === area.name && technicalIncidentIsOpen(incident))) {
+      showToast("Répare ou annule le signalement technique avant de renommer cette zone");
+      return;
+    }
+    if (commonAreas.some((candidate) => candidate.id !== area.id && candidate.name.toLocaleLowerCase("fr") === nextName.toLocaleLowerCase("fr"))) {
+      showToast("Ce nom existe déjà");
+      return;
+    }
+    setCommonAreas((current) => current.map((candidate) => candidate.id === area.id ? { ...candidate, name: nextName } : candidate));
+  };
+
+  const moveCommonAreaSetting = (id: string, direction: -1 | 1) => {
+    setCommonAreas((current) => {
+      const index = current.findIndex((area) => area.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const toggleCommonAreaArchive = (area: CommonArea) => {
+    if (area.active !== false && technicalIncidents.some((incident) => incident.locationType === "common_area" && incident.location === area.name && technicalIncidentIsOpen(incident))) {
+      showToast("Répare ou annule le signalement technique avant d’archiver cette zone");
+      return;
+    }
+    setCommonAreas((current) => current.map((candidate) => candidate.id === area.id ? { ...candidate, active: area.active === false } : candidate));
+  };
+
   const markRemainingFree = () => {
     if (!prepStats.unclassified) return;
     const confirmed = window.confirm(
@@ -2335,8 +2477,8 @@ export default function Home() {
     });
   };
 
-  const assignSelected = () => {
-    if (!selectedRooms.size) {
+  const assignSelected = (selection = selectedRooms) => {
+    if (!selection.size) {
       showToast("Sélectionne au moins une chambre");
       return;
     }
@@ -2344,8 +2486,8 @@ export default function Home() {
       showToast("Choisis une personne présente dans l’équipe du jour");
       return;
     }
-    setRooms((current) => current.map((room) => (selectedRooms.has(room.number) ? { ...room, housekeeper: assignTarget } : room)));
-    showToast(`${selectedRooms.size} chambre${selectedRooms.size > 1 ? "s" : ""} attribuée${selectedRooms.size > 1 ? "s" : ""} à ${assignTarget}`);
+    setRooms((current) => current.map((room) => (selection.has(room.number) ? { ...room, housekeeper: assignTarget } : room)));
+    showToast(`${selection.size} chambre${selection.size > 1 ? "s" : ""} attribuée${selection.size > 1 ? "s" : ""} à ${assignTarget}`);
     setSelectedRooms(new Set());
   };
 
@@ -2501,7 +2643,7 @@ export default function Home() {
     }
     doc.setFontSize(11);
     doc.setTextColor(17, 43, 60);
-    doc.text(doc.splitTextToSize(`Tâches annexes : ${employeeAnnexSummary(employee)}`, 180), 14, nextY);
+    doc.text(doc.splitTextToSize(`Tâches annexes et communs : ${employeeAnnexSummary(employee, commonAreas)}`, 180), 14, nextY);
     doc.text(`Horaires : ${employee.start}–${employee.end} · Pause : ${employee.pause} min`, 14, nextY + 16);
     doc.save(`feuille-${employeeFullName(employee).toLowerCase().replaceAll(" ", "-")}-${workDate}.pdf`);
     showToast(`Feuille PDF de ${employeeFullName(employee)} générée`);
@@ -2626,22 +2768,57 @@ export default function Home() {
     );
   }
 
+  if (cloudClient && authMode === "recovery") {
+    return (
+      <main className="pilot-gate">
+        <form className="pilot-gate-card auth-card" onSubmit={submitRecoveryPassword}>
+          <img src="/raccoon-housekeeping-icon.png" alt="Raccotel Housekeeping" />
+          <p className="eyebrow">Réinitialisation sécurisée</p>
+          <h1>Nouveau mot de passe</h1>
+          <p>Choisis un nouveau mot de passe pour ton compte. L’administrateur ne pourra ni le voir ni le modifier.</p>
+          <label><span>Nouveau mot de passe</span><input type="password" autoComplete="new-password" minLength={6} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="6 caractères minimum" /></label>
+          {authError && <div className="auth-message error"><CircleAlert size={16} />{authError}</div>}
+          <button className="button primary auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Enregistrement…" : "Enregistrer le nouveau mot de passe"}</button>
+        </form>
+      </main>
+    );
+  }
+
   if (cloudClient && !authUserEmail) {
+    if (authMode === "forgot") {
+      return (
+        <main className="pilot-gate">
+          <form className="pilot-gate-card auth-card" onSubmit={requestPasswordReset}>
+            <img src="/raccoon-housekeeping-icon.png" alt="Raccotel Housekeeping" />
+            <p className="eyebrow">Accès au compte</p>
+            <h1>Mot de passe oublié</h1>
+            <p>Indique l’adresse du compte. Le lien permettra uniquement de choisir un nouveau mot de passe.</p>
+            <label><span>Adresse e-mail</span><input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="prenom@hotel.fr" /></label>
+            {authError && <div className={`auth-message ${authError.startsWith("Si cette adresse") ? "success" : "error"}`}><CircleAlert size={16} />{authError}</div>}
+            <button className="button primary auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Envoi…" : "Envoyer le lien"}</button>
+            <button className="auth-switch" type="button" onClick={() => { setAuthMode("login"); setAuthError(null); }}>Retour à la connexion</button>
+          </form>
+        </main>
+      );
+    }
     return (
       <main className="pilot-gate">
         <form className="pilot-gate-card auth-card" onSubmit={submitCloudAuth}>
-          <img src="/raccoon-housekeeping-icon.png" alt="Raccoon Housekeeping" />
-          <p className="eyebrow">Version pilote · V0.2</p>
-          <h1>Raccoon Housekeeping</h1>
+          <img src="/raccoon-housekeeping-icon.png" alt="Raccotel Housekeeping" />
+          <p className="eyebrow">Accès sécurisé</p>
+          <h1>Raccotel Housekeeping</h1>
           <p>Connecte-toi pour retrouver la journée de l’hôtel sur tous les appareils autorisés.</p>
           <label><span>Adresse e-mail</span><input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="prenom@hotel.fr" /></label>
           <label><span>Mot de passe</span><input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} minLength={6} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="6 caractères minimum" /></label>
           {authError && <div className={`auth-message ${authError.startsWith("Compte créé") ? "success" : "error"}`}><CircleAlert size={16} />{authError}</div>}
           <button className="button primary auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Connexion…" : authMode === "login" ? "Se connecter" : "Créer mon compte"}</button>
-          <button className="auth-switch" type="button" onClick={() => { setAuthMode((mode) => mode === "login" ? "signup" : "login"); setAuthError(null); }}>
-            {authMode === "login" ? "Créer mon compte" : "J’ai déjà un compte"}
-          </button>
-          <small>Le premier compte créé sur une base vide devient administrateur. Les suivants doivent être autorisés dans Paramètres.</small>
+          <div className="auth-secondary-actions">
+            <button className="auth-switch" type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(null); }}>
+              {authMode === "login" ? "Première connexion" : "J’ai déjà un compte"}
+            </button>
+            {authMode === "login" && <button className="auth-switch" type="button" onClick={() => { setAuthMode("forgot"); setAuthError(null); setAuthPassword(""); }}>Mot de passe oublié</button>}
+          </div>
+          <small>Pour une première connexion, l’adresse doit d’abord avoir été autorisée par l’administrateur dans Paramètres.</small>
         </form>
       </main>
     );
@@ -2685,7 +2862,7 @@ export default function Home() {
   }[syncStatus];
 
   const pageTitle = {
-    dashboard: hotelName,
+    dashboard: "Tableau de bord",
     distribution: "Distribution des chambres",
     personnel: "Personnel",
     reports: "Rapport d’étage",
@@ -2695,14 +2872,15 @@ export default function Home() {
   const renderDashboard = () => {
     const classified = rooms.length - prepStats.unclassified;
     const floors = Array.from(new Set(rooms.map((room) => room.number.charAt(0)).filter(Boolean))).sort();
-    const completedCommonAreas = commonAreas.filter((area) => area.completed).length;
+    const activeCommonAreas = commonAreas.filter((area) => area.active !== false);
+    const completedCommonAreas = activeCommonAreas.filter((area) => area.completed).length;
     const dashboardTabs = (
       <nav className="dashboard-tabs" aria-label="Tableaux du jour">
         <button className={dashboardView === "rooms" ? "active" : ""} onClick={() => setDashboardView("rooms")}>
           <BedDouble size={17} /> Tableau des chambres <span>{rooms.length}</span>
         </button>
         <button className={dashboardView === "commons" ? "active" : ""} onClick={() => setDashboardView("commons")}>
-          <Building2 size={17} /> Tableau des communs <span>{commonAreas.length}</span>
+          <Building2 size={17} /> Tableau des communs <span>{activeCommonAreas.length}</span>
         </button>
       </nav>
     );
@@ -2717,10 +2895,10 @@ export default function Home() {
               <h2>Tableau des espaces communs</h2>
               <p>Retrouve ici les couloirs, circulations et espaces de l’hôtel, sans modifier le tableau des chambres.</p>
             </div>
-            <div className="common-progress"><strong>{completedCommonAreas} / {commonAreas.length}</strong><span>contrôlés aujourd’hui</span></div>
+            <div className="common-progress"><strong>{completedCommonAreas} / {activeCommonAreas.length}</strong><span>contrôlés aujourd’hui</span></div>
           </section>
           <section className="common-area-grid" aria-label="Tableau des parties communes">
-            {commonAreas.map((area) => (
+            {activeCommonAreas.map((area) => (
               <button
                 type="button"
                 key={area.id}
@@ -2884,14 +3062,28 @@ export default function Home() {
 
   const renderDistribution = () => {
     const distributableRooms = rooms.filter((room) => room.intervention === "À blanc" || room.intervention === "Recouche");
+    const visibleDistributableRooms = distributableRooms.filter((room) => {
+      const matchesIntervention = distributionInterventionFilter === "all"
+        || (distributionInterventionFilter === "blank" && room.intervention === "À blanc")
+        || (distributionInterventionFilter === "stayover" && room.intervention === "Recouche");
+      const matchesAssignee = distributionAssigneeFilter === "all"
+        || (distributionAssigneeFilter === "unassigned" && !room.housekeeper)
+        || room.housekeeper === distributionAssigneeFilter;
+      return matchesIntervention && matchesAssignee;
+    });
+    const visibleRoomNumbers = new Set(visibleDistributableRooms.map((room) => room.number));
+    const visibleSelectedRooms = new Set(Array.from(selectedRooms).filter((number) => visibleRoomNumbers.has(number)));
+    const allVisibleSelected = Boolean(visibleDistributableRooms.length)
+      && visibleDistributableRooms.every((room) => selectedRooms.has(room.number));
     const unassignedCount = distributableRooms.filter((room) => !room.housekeeper).length;
     const idealFor = (employee: Employee) => {
-      const available = Math.max(0, employee.presenceMinutes - employee.pause - employeeAnnexMinutes(employee));
+      const available = Math.max(0, employee.presenceMinutes - employee.pause - employeeAnnexMinutes(employee, commonAreas));
       const targetMinutes = totalAvailableMinutes ? prepStats.workloadMinutes * available / totalAvailableMinutes : 0;
       return { available, targetMinutes, targetRooms: targetMinutes ? Math.round(targetMinutes / averageRoomMinutes) : 0 };
     };
     const phoneEmployeeRecord = employees.find((employee) => employee.name === phoneEmployee);
     const phoneEmployeeRooms = rooms.filter((room) => room.housekeeper === phoneEmployee);
+    const phoneCommonTasks = phoneEmployeeRecord ? employeeCommonAreaTasks(phoneEmployeeRecord, commonAreas) : [];
     const phoneBlankRooms = phoneEmployeeRooms.filter((room) => room.intervention === "À blanc");
     const phoneStayoverRooms = phoneEmployeeRooms.filter((room) => room.intervention === "Recouche");
 
@@ -3013,7 +3205,7 @@ export default function Home() {
             const assignedBlanks = assigned.filter((room) => room.intervention === "À blanc").length;
             const assignedStayovers = assigned.filter((room) => room.intervention === "Recouche").length;
             const theoretical = assigned.reduce((total, room) => total + (room.intervention === "À blanc" ? blankMinutes : stayoverMinutes), 0);
-            const annexMinutes = employeeAnnexMinutes(employee);
+            const annexMinutes = employeeAnnexMinutes(employee, commonAreas);
             const totalCharge = theoretical + annexMinutes;
             const netDay = Math.max(0, employee.presenceMinutes - employee.pause);
             const ideal = idealFor(employee);
@@ -3035,19 +3227,55 @@ export default function Home() {
         <section className="distribution-layout">
           <div className="table-card assignment-card">
             <div className="card-title-row">
-              <div><h3>Chambres à distribuer</h3><p>{selectedRooms.size ? `${selectedRooms.size} sélectionnée${selectedRooms.size > 1 ? "s" : ""}` : `${unassignedCount} non attribuée${unassignedCount > 1 ? "s" : ""}`}</p></div>
+              <div><h3>Chambres à distribuer</h3><p>{visibleSelectedRooms.size ? `${visibleSelectedRooms.size} sélectionnée${visibleSelectedRooms.size > 1 ? "s" : ""}` : `${visibleDistributableRooms.length} affichée${visibleDistributableRooms.length > 1 ? "s" : ""} · ${unassignedCount} non attribuée${unassignedCount > 1 ? "s" : ""}`}</p></div>
               <div className="assign-box">
                 <select value={assignTarget} onChange={(event) => setAssignTarget(event.target.value)} aria-label="Attribuer à">
                   {presentEmployees.map((employee) => <option key={employee.id} value={employee.name}>{employeeFullName(employee)}</option>)}
                 </select>
-                <button className="button compact primary" onClick={assignSelected} disabled={!presentEmployees.length}>Attribuer</button>
+                <button className="button compact primary" onClick={() => assignSelected(visibleSelectedRooms)} disabled={!presentEmployees.length || !visibleSelectedRooms.size}>Attribuer</button>
               </div>
+            </div>
+            <div className="distribution-filters" aria-label="Filtres de distribution">
+              <label>
+                <span>Intervention</span>
+                <select value={distributionInterventionFilter} onChange={(event) => {
+                  setDistributionInterventionFilter(event.target.value as DistributionInterventionFilter);
+                  setSelectedRooms(new Set());
+                }}>
+                  <option value="all">Toutes</option>
+                  <option value="stayover">Recouches</option>
+                  <option value="blank">À blanc</option>
+                </select>
+              </label>
+              <label>
+                <span>Attribution</span>
+                <select value={distributionAssigneeFilter} onChange={(event) => {
+                  setDistributionAssigneeFilter(event.target.value);
+                  setSelectedRooms(new Set());
+                }}>
+                  <option value="all">Toutes les attributions</option>
+                  <option value="unassigned">Non attribuées</option>
+                  {presentEmployees.map((employee) => <option key={employee.id} value={employee.name}>{employeeFullName(employee)}</option>)}
+                </select>
+              </label>
+              {(distributionInterventionFilter !== "all" || distributionAssigneeFilter !== "all") && (
+                <button type="button" className="button compact secondary" onClick={() => {
+                  setDistributionInterventionFilter("all");
+                  setDistributionAssigneeFilter("all");
+                  setSelectedRooms(new Set());
+                }}>Effacer les filtres</button>
+              )}
             </div>
             <div className="table-scroll distribution-table-scroll">
               <table className="room-table assignment-table">
-                <thead><tr><th aria-label="Sélection"><input type="checkbox" checked={Boolean(distributableRooms.length) && selectedRooms.size === distributableRooms.length} onChange={() => setSelectedRooms(selectedRooms.size === distributableRooms.length ? new Set() : new Set(distributableRooms.map((room) => room.number)))} aria-label="Sélectionner toutes les chambres" /></th><th>Chambre</th><th>Type</th><th>Disposition</th><th>Intervention</th><th>Attribuée à</th><th>Consigne</th></tr></thead>
+                <thead><tr><th aria-label="Sélection"><input type="checkbox" checked={allVisibleSelected} onChange={() => setSelectedRooms((current) => {
+                  const next = new Set(current);
+                  if (allVisibleSelected) visibleDistributableRooms.forEach((room) => next.delete(room.number));
+                  else visibleDistributableRooms.forEach((room) => next.add(room.number));
+                  return next;
+                })} aria-label="Sélectionner toutes les chambres affichées" /></th><th>Chambre</th><th>Type</th><th>Disposition</th><th>Intervention</th><th>Attribuée à</th><th>Consigne</th></tr></thead>
                 <tbody>
-                  {distributableRooms.map((room) => (
+                  {visibleDistributableRooms.map((room) => (
                     <tr key={room.number} className={selectedRooms.has(room.number) ? "row-selected" : ""}>
                       <td><input type="checkbox" checked={selectedRooms.has(room.number)} onChange={() => toggleSelection(room.number)} aria-label={`Sélectionner la chambre ${room.number}`} /></td>
                       <td><strong>{room.number}</strong></td>
@@ -3067,6 +3295,7 @@ export default function Home() {
                       <td className={`comment-cell ${layoutChangeInstruction(room) ? "automatic-consigne" : ""}`}>{housekeeperInstruction(room) || "—"}</td>
                     </tr>
                   ))}
+                  {!visibleDistributableRooms.length && <tr><td className="distribution-empty" colSpan={7}>Aucune chambre ne correspond à ces filtres.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -3079,8 +3308,19 @@ export default function Home() {
                 <div className="phone-status"><span>9:41</span><Wifi size={14} /></div>
                 <div className="phone-brand"><img src={hotelLogo} alt={hotelName} /><span>{new Intl.DateTimeFormat("fr-FR", { weekday: "short", day: "numeric", month: "short" }).format(safeDate(workDate))}</span></div>
                 <div className="phone-greeting"><small>Bonjour</small><h3>{phoneEmployee}</h3><p>{phoneEmployeeRooms.length} chambres aujourd’hui · {phoneBlankRooms.length} à blanc · {phoneStayoverRooms.length} recouches</p></div>
-                <div className="phone-task"><Sparkles size={17} /><div><small>Tâches annexes</small>{phoneEmployeeRecord?.annexTasks.length ? phoneEmployeeRecord.annexTasks.map((task) => <strong key={task.id}>{task.label || "Tâche à préciser"} · {task.minutes} min</strong>) : <strong>Aucune</strong>}</div></div>
+                <div className="phone-task"><Sparkles size={17} /><div><small>Tâches annexes</small>{phoneEmployeeRecord && employeeAnnexMinutes(phoneEmployeeRecord, commonAreas) ? <strong>{employeeAnnexSummary(phoneEmployeeRecord, commonAreas)}</strong> : <strong>Aucune</strong>}</div></div>
                 <div className="phone-list">
+                {phoneCommonTasks.length > 0 && <div className="phone-common-tasks">
+                  <header><strong>PARTIES COMMUNES</strong><span>{phoneCommonTasks.length}</span></header>
+                  {phoneCommonTasks.map((area) => <article className={area.completed ? "completed" : ""} key={area.id}>
+                    <div><strong>{area.name}</strong><span>{area.minutes} min</span></div>
+                    <p>{area.comment || "Ménage demandé"}</p>
+                    <button type="button" disabled={area.completed} onClick={() => {
+                      setCommonAreas((current) => current.map((item) => item.id === area.id ? { ...item, completed: true } : item));
+                      showToast(`${area.name} · ménage terminé`);
+                    }}>{area.completed ? <><Check size={14} /> Terminé</> : "Déclarer terminé"}</button>
+                  </article>)}
+                </div>}
                   <section className="phone-room-section blank-section">
                     <header><strong>À BLANC</strong><span>{phoneBlankRooms.length}</span></header>
                     {phoneBlankRooms.length ? phoneBlankRooms.map((room) => (
@@ -3230,6 +3470,26 @@ export default function Home() {
           <div className="room-type-tags" aria-label="Typologies de chambres">{Object.entries(categoryCounts).map(([category, count]) => <span key={category}>{category} · {count}</span>)}</div>
           <button className="button secondary full" onClick={openRoomSettings}><Pencil size={17} /> Configurer les chambres et typologies</button>
         </article>
+        <article className="settings-card common-area-settings-card">
+          <div className="settings-card-title"><Building2 size={20} /><div><h3>Parties communes partagées</h3><p>Référentiel unique pour Housekeeping et Technique.</p></div></div>
+          <div className="common-area-settings-list">
+            {commonAreas.map((area, index) => (
+              <div className={`common-area-setting-row ${area.active === false ? "archived" : ""}`} key={area.id}>
+                <input defaultValue={area.name} disabled={area.active === false} onBlur={(event) => renameCommonAreaSetting(area, event.target.value)} aria-label={`Nom de la partie commune ${index + 1}`} />
+                <div className="common-area-order-buttons">
+                  <button type="button" disabled={index === 0} onClick={() => moveCommonAreaSetting(area.id, -1)} aria-label={`Remonter ${area.name}`}>↑</button>
+                  <button type="button" disabled={index === commonAreas.length - 1} onClick={() => moveCommonAreaSetting(area.id, 1)} aria-label={`Descendre ${area.name}`}>↓</button>
+                </div>
+                <button type="button" className="common-area-archive-button" onClick={() => toggleCommonAreaArchive(area)} aria-label={area.active === false ? `Réactiver ${area.name}` : `Archiver ${area.name}`}>{area.active === false ? <Check size={15} /> : <Archive size={15} />}</button>
+              </div>
+            ))}
+          </div>
+          <div className="common-area-add-row">
+            <input value={newCommonAreaName} onChange={(event) => setNewCommonAreaName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addCommonAreaSetting(); }} placeholder="Nouvelle partie commune" />
+            <button type="button" onClick={addCommonAreaSetting} disabled={!newCommonAreaName.trim()}><Plus size={14} /> Ajouter</button>
+          </div>
+          <small className="settings-help">Les zones archivées restent dans l’historique mais ne sont plus proposées au quotidien.</small>
+        </article>
         <article className="settings-card">
           <div className="settings-card-title"><MessageSquareText size={20} /><div><h3>Consignes prédéfinies</h3><p>Ajoutables en un geste par la réception.</p></div></div>
           <div className="instruction-settings-list">
@@ -3299,7 +3559,7 @@ export default function Home() {
           })}
         </nav>
         <div className="sidebar-bottom">
-          <div className="raccoon-signature"><img src="/favicon-32.png" alt="" /><span>Raccoon Housekeeping<small>V0.1 terrain</small></span></div>
+          <div className="raccoon-signature"><img src="/favicon-32.png" alt="" /><span>Raccotel Housekeeping</span></div>
           <button className={page === "settings" ? "active" : ""} onClick={openSettings}><Settings size={20} /><span>Paramètres</span>{!canManageSettings && <LockKeyhole className="settings-lock-icon" size={13} />}</button>
           <div className="user-menu-wrap">
             <button className="user-card" onClick={() => setShowAccountMenu((value) => !value)} aria-expanded={showAccountMenu} aria-label={cloudContext ? "Ouvrir le menu du compte" : "Changer de compte"}>
