@@ -1553,17 +1553,24 @@ export default function Home() {
     const { error } = await cloudClient.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/`,
     });
+    let adminNotified = false;
     if (!error) {
-      void fetch("/api/auth/reset-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
+      try {
+        const response = await fetch("/api/auth/reset-request", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+        const notification = await response.json().catch(() => null) as { notified?: boolean } | null;
+        adminNotified = response.ok && notification?.notified === true;
+      } catch {
+        adminNotified = false;
+      }
     }
     setAuthBusy(false);
     setAuthError(error
       ? "La demande n’a pas pu être envoyée pour le moment. Réessaie dans quelques minutes."
-      : "Si cette adresse correspond à un compte autorisé, le lien de réinitialisation vient d’être envoyé. L’administrateur a aussi été informé.");
+      : `Si cette adresse correspond à un compte autorisé, le lien de réinitialisation vient d’être envoyé.${adminNotified ? " L’administrateur a aussi été informé." : ""}`);
   };
 
   const submitRecoveryPassword = async (event: FormEvent<HTMLFormElement>) => {
