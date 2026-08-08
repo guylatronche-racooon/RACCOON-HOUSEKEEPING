@@ -36,7 +36,7 @@ test("the shared workflow carries status, history and private photos both ways",
   assert.match(cloud, /"detected"[\s\S]*"reported"[\s\S]*"in_progress"[\s\S]*"repaired"[\s\S]*"cancelled"/);
   assert.match(cloud, /createSignedUrl\(key, 60 \* 60\)/);
   assert.match(cloud, /\$\{hotelId\}\/interventions\//);
-  assert.match(page, /Suivi commun Raccotel/);
+  assert.match(page, /Suivi commun Occaris/);
   assert.match(page, /className="technical-history"/);
   assert.match(page, /Signalement technique annulé dans les deux applications/);
   assert.match(page, /Housekeeping et Technique synchronisés/);

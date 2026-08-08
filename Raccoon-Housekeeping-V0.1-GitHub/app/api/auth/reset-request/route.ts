@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     body: JSON.stringify({
       from,
       to: [to],
-      subject: "Demande de réinitialisation Raccotel",
+      subject: "Demande de réinitialisation Occaris",
       html: `<p>Une demande de réinitialisation du mot de passe a été effectuée pour le compte <strong>${escapeHtml(email)}</strong>.</p><p>L’utilisateur a reçu un lien sécurisé lui permettant de choisir lui-même son nouveau mot de passe. Aucun mot de passe n’est visible par l’administrateur.</p>`,
     }),
   });

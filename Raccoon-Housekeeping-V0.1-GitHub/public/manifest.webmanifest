@@ -1,6 +1,6 @@
 {
-  "name": "Raccoon Housekeeping",
-  "short_name": "Raccoon HK",
+  "name": "Occaris Housekeeping",
+  "short_name": "Occaris HK",
   "description": "Préparation, distribution et suivi des chambres d’hôtel.",
   "start_url": "/",
   "display": "standalone",
@@ -23,4 +23,3 @@
     }
   ]
 }
-

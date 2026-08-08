@@ -14,14 +14,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  applicationName: "Raccoon Housekeeping",
-  title: "Raccoon Housekeeping · Hôtel Les Chevaliers",
+  applicationName: "Occaris Housekeeping",
+  title: "Occaris Housekeeping · Hôtel Les Chevaliers",
   description: "Préparation, distribution et suivi des chambres d'hôtel.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Raccoon HK",
+    title: "Occaris HK",
   },
   other: {
     "codex-preview": "development",

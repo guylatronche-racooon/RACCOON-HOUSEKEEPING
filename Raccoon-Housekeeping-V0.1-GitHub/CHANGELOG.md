@@ -20,6 +20,6 @@
 - sauvegarde automatique par journée ;
 - mode hors ligne et PDF de secours ;
 - comptes partagés et synchronisation Supabase optionnelle ;
-- PWA installable avec l’icône Raccoon Housekeeping ;
+- PWA installable avec l’icône Occaris Housekeeping ;
 - dates réelles et consultation des journées précédentes ;
 - conservation de toutes les fonctions validées lors des essais de maquette.

@@ -31,8 +31,8 @@ test("renders development preview metadata", async () => {
   );
   const html = await response.text();
   assert.match(html, developmentPreviewMeta);
-  assert.match(html, /Raccoon Housekeeping/);
+  assert.match(html, /Occaris Housekeeping/);
   assert.match(html, /manifest\.webmanifest/);
-  assert.match(html, /raccoon-housekeeping-icon\.png/);
+  assert.match(html, /occaris-housekeeping-icon\.png/);
   assert.match(html, /Chargement de la journée/);
 });

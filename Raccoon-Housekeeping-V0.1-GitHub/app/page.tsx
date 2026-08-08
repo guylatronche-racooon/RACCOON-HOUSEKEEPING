@@ -1657,7 +1657,7 @@ export default function Home() {
     error instanceof Error ? error.message : "Impossible de synchroniser le signalement avec Technique.";
 
   const ensureRoomTechnicalIncident = async (room: Room) => {
-    if (!cloudClient || !cloudContext) throw new Error("Connexion au socle Raccotel requise.");
+    if (!cloudClient || !cloudContext) throw new Error("Connexion au socle Occaris requise.");
     const existing = incidentForLocation("room", room.number);
     if (existing) return existing;
     const description = room.floorComment?.trim() || room.receptionComment?.trim() || "";
@@ -1707,7 +1707,7 @@ export default function Home() {
       setTechnicalBusy(true);
       setTechnicalSyncError(null);
       void (async () => {
-        if (!cloudClient || !cloudContext) throw new Error("Connexion au socle Raccotel requise.");
+        if (!cloudClient || !cloudContext) throw new Error("Connexion au socle Occaris requise.");
         const incident = currentIncident
           ? await updateCloudTechnicalIncident(cloudClient, cloudContext, currentIncident.id, { workflowStatus: "detected" })
           : await ensureRoomTechnicalIncident(room);
@@ -1726,7 +1726,7 @@ export default function Home() {
 
   const updateTechnicalStatus = async (room: Room, technicalStatus: TechnicalStatus) => {
     if (!cloudClient || !cloudContext) {
-      showToast("Connexion au socle Raccotel requise.");
+      showToast("Connexion au socle Occaris requise.");
       return;
     }
     setTechnicalBusy(true);
@@ -1779,7 +1779,7 @@ export default function Home() {
       return;
     }
     if (!cloudClient || !cloudContext) {
-      showToast("Connexion au socle Raccotel requise.");
+      showToast("Connexion au socle Occaris requise.");
       return;
     }
     setTechnicalBusy(true);
@@ -1951,7 +1951,7 @@ export default function Home() {
     const existingIncident = incidentForLocation("common_area", commonAreaDraft.name);
     if (commonAreaDraft.action === "Problème technique") {
       if (!cloudClient || !cloudContext) {
-        showToast("Connexion au socle Raccotel requise.");
+        showToast("Connexion au socle Occaris requise.");
         return;
       }
       setTechnicalBusy(true);
@@ -2766,9 +2766,9 @@ export default function Home() {
     return (
       <main className="pilot-gate">
         <div className="pilot-gate-card loading-card">
-          <img src="/raccoon-housekeeping-icon.png" alt="Raccoon Housekeeping" />
+          <img src="/occaris-housekeeping-icon.png" alt="Occaris Housekeeping" />
           <span className="loading-spinner" />
-          <h1>Raccoon Housekeeping</h1>
+          <h1>Occaris Housekeeping</h1>
           <p>Ouverture de l’application…</p>
         </div>
       </main>
@@ -2779,7 +2779,7 @@ export default function Home() {
     return (
       <main className="pilot-gate">
         <form className="pilot-gate-card auth-card" onSubmit={submitRecoveryPassword}>
-          <img src="/raccoon-housekeeping-icon.png" alt="Raccotel Housekeeping" />
+          <img src="/occaris-housekeeping-icon.png" alt="Occaris Housekeeping" />
           <p className="eyebrow">Réinitialisation sécurisée</p>
           <h1>Nouveau mot de passe</h1>
           <p>Choisis un nouveau mot de passe pour ton compte. L’administrateur ne pourra ni le voir ni le modifier.</p>
@@ -2796,7 +2796,7 @@ export default function Home() {
       return (
         <main className="pilot-gate">
           <form className="pilot-gate-card auth-card" onSubmit={requestPasswordReset}>
-            <img src="/raccoon-housekeeping-icon.png" alt="Raccotel Housekeeping" />
+            <img src="/occaris-housekeeping-icon.png" alt="Occaris Housekeeping" />
             <p className="eyebrow">Accès au compte</p>
             <h1>Mot de passe oublié</h1>
             <p>Indique l’adresse du compte. Le lien permettra uniquement de choisir un nouveau mot de passe.</p>
@@ -2811,9 +2811,9 @@ export default function Home() {
     return (
       <main className="pilot-gate">
         <form className="pilot-gate-card auth-card" onSubmit={submitCloudAuth}>
-          <img src="/raccoon-housekeeping-icon.png" alt="Raccotel Housekeeping" />
+          <img src="/occaris-housekeeping-icon.png" alt="Occaris Housekeeping" />
           <p className="eyebrow">Accès sécurisé</p>
-          <h1>Raccotel Housekeeping</h1>
+          <h1>Occaris Housekeeping</h1>
           <p>Connecte-toi pour retrouver la journée de l’hôtel sur tous les appareils autorisés.</p>
           <label><span>Adresse e-mail</span><input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="prenom@hotel.fr" /></label>
           <label><span>Mot de passe</span><input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} minLength={6} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="6 caractères minimum" /></label>
@@ -2835,7 +2835,7 @@ export default function Home() {
     return (
       <main className="pilot-gate">
         <div className="pilot-gate-card access-card">
-          <img src="/raccoon-housekeeping-icon.png" alt="Raccoon Housekeeping" />
+          <img src="/occaris-housekeeping-icon.png" alt="Occaris Housekeeping" />
           <CircleAlert className="access-alert" size={30} />
           <h1>Compte non autorisé</h1>
           <p>{cloudContextError}</p>
@@ -2850,9 +2850,9 @@ export default function Home() {
     return (
       <main className="pilot-gate">
         <div className="pilot-gate-card loading-card">
-          <img src="/raccoon-housekeeping-icon.png" alt="Raccoon Housekeeping" />
+          <img src="/occaris-housekeeping-icon.png" alt="Occaris Housekeeping" />
           <span className="loading-spinner" />
-          <h1>Raccoon Housekeeping</h1>
+          <h1>Occaris Housekeeping</h1>
           <p>Chargement de la journée du {shortDateLabel(workDate)}…</p>
         </div>
       </main>
@@ -3430,7 +3430,7 @@ export default function Home() {
           </div>
           <aside className="events-card">
             <div className="events-title"><div><h3>Événements</h3><p>Repris dans le rapport PDF</p></div><span>{dayEvents.length}</span></div>
-            {dayEvents.length ? <ol className="event-list">{dayEvents.map((room) => <li key={room.number}><span className={`event-icon ${room.technicalStatus ? "blue" : room.alert === "Refus de service" ? "amber" : "red"}`}>{room.technicalStatus ? <Wrench size={16} /> : <BellRing size={16} />}</span><div><strong>Chambre {room.number} · {roomEventLabel(room)}</strong><p>{room.floorComment ?? room.receptionComment ?? "Sans commentaire"}</p>{roomPhotoSource(room) && <img className="event-photo" src={roomPhotoSource(room)} alt={`Photo du problème en chambre ${room.number}`} />}<small>{room.technicalStatus === "Réparé" ? "Conservé dans le rapport après réparation" : "Synchronisé avec Raccotel Technique"}</small></div></li>)}</ol> : <div className="empty-events"><CheckCircle2 size={24} /><p>Aucun événement déclaré pour le moment.</p></div>}
+            {dayEvents.length ? <ol className="event-list">{dayEvents.map((room) => <li key={room.number}><span className={`event-icon ${room.technicalStatus ? "blue" : room.alert === "Refus de service" ? "amber" : "red"}`}>{room.technicalStatus ? <Wrench size={16} /> : <BellRing size={16} />}</span><div><strong>Chambre {room.number} · {roomEventLabel(room)}</strong><p>{room.floorComment ?? room.receptionComment ?? "Sans commentaire"}</p>{roomPhotoSource(room) && <img className="event-photo" src={roomPhotoSource(room)} alt={`Photo du problème en chambre ${room.number}`} />}<small>{room.technicalStatus === "Réparé" ? "Conservé dans le rapport après réparation" : "Synchronisé avec Occaris Technique"}</small></div></li>)}</ol> : <div className="empty-events"><CheckCircle2 size={24} /><p>Aucun événement déclaré pour le moment.</p></div>}
             <label className={`report-comment-field ${reportCommentError ? "error" : ""}`}>
               <span>Commentaire de la gouvernante <b>obligatoire</b></span>
               <textarea value={reportComment} onChange={(event) => { setReportComment(event.target.value); if (event.target.value.trim()) setReportCommentError(false); }} placeholder="Événements de la journée ou RAS" />
@@ -3566,7 +3566,7 @@ export default function Home() {
           })}
         </nav>
         <div className="sidebar-bottom">
-          <div className="raccoon-signature"><img src="/favicon-32.png" alt="" /><span>Raccotel Housekeeping</span></div>
+          <div className="raccoon-signature"><img src="/favicon-32.png" alt="" /><span>Occaris Housekeeping</span></div>
           <button className={page === "settings" ? "active" : ""} onClick={openSettings}><Settings size={20} /><span>Paramètres</span>{!canManageSettings && <LockKeyhole className="settings-lock-icon" size={13} />}</button>
           <div className="user-menu-wrap">
             <button className="user-card" onClick={() => setShowAccountMenu((value) => !value)} aria-expanded={showAccountMenu} aria-label={cloudContext ? "Ouvrir le menu du compte" : "Changer de compte"}>
@@ -3662,7 +3662,7 @@ export default function Home() {
                   </label>
                   {currentRoomIncident && (
                     <div className="technical-shared-card">
-                      <div><Wrench size={16} /><strong>Suivi commun Raccotel</strong><span>{technicalWorkflowLabels[currentRoomIncident.workflowStatus]}</span></div>
+                      <div><Wrench size={16} /><strong>Suivi commun Occaris</strong><span>{technicalWorkflowLabels[currentRoomIncident.workflowStatus]}</span></div>
                       <p>{currentRoomIncident.description || "Aucune précision au signalement."}</p>
                       {currentRoomIncident.comment && <blockquote>{currentRoomIncident.comment}</blockquote>}
                       {currentRoomIncident.assignee && <small>Attribué à {currentRoomIncident.assignee}</small>}
@@ -3751,7 +3751,7 @@ export default function Home() {
                 </label>
                 {currentCommonAreaIncident && (
                   <div className="technical-shared-card">
-                    <div><Wrench size={16} /><strong>Suivi commun Raccotel</strong><span>{technicalWorkflowLabels[currentCommonAreaIncident.workflowStatus]}</span></div>
+                    <div><Wrench size={16} /><strong>Suivi commun Occaris</strong><span>{technicalWorkflowLabels[currentCommonAreaIncident.workflowStatus]}</span></div>
                     {currentCommonAreaIncident.comment && <blockquote>{currentCommonAreaIncident.comment}</blockquote>}
                     {currentCommonAreaIncident.assignee && <small>Attribué à {currentCommonAreaIncident.assignee}</small>}
                     <ol className="technical-history">

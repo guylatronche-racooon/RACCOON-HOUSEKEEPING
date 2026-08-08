@@ -1,4 +1,4 @@
-# Raccoon Housekeeping — V0.2 terrain
+# Occaris Housekeeping — V0.2 terrain
 
 Application de préparation, distribution et suivi des chambres pour les équipes d’étages.
 

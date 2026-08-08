@@ -1,4 +1,4 @@
-# Retours terrain — Raccoon Housekeeping
+# Retours terrain — Occaris Housekeeping
 
 Regrouper ici les anomalies et améliorations avant chaque mise à jour.
 
@@ -20,4 +20,3 @@ Regrouper ici les anomalies et améliorations avant chaque mise à jour.
 ## Règle de mise à jour
 
 Une modification fonctionnelle = une nouvelle version numérotée et une ligne dans `CHANGELOG.md`. Avant chaque publication, vérifier que le bouton **Classer toutes les restantes en Libre**, les PDF de secours et la séparation **À blanc / Recouches** sont toujours présents.
-

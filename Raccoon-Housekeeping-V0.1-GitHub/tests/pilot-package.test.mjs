@@ -4,9 +4,9 @@ import test from "node:test";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("the installable app has the Raccoon identity and required icons", async () => {
+test("the installable app has the Occaris identity and required icons", async () => {
   const manifest = JSON.parse(await read("public/manifest.webmanifest"));
-  assert.equal(manifest.name, "Raccoon Housekeeping");
+  assert.equal(manifest.name, "Occaris Housekeeping");
   assert.equal(manifest.display, "standalone");
   assert.deepEqual(manifest.icons.map((icon) => icon.sizes), ["192x192", "512x512"]);
 });
